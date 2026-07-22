@@ -1325,7 +1325,7 @@ function renderVetNoteModal(p) {
     <div class="modal" data-stop>
       <div class="modal-head"><h3 class="serif">특이사항 기록</h3><button data-action="close-modal">${icon("x", 20)}</button></div>
       <div class="hint">변 상태, 컨디션 변화, 병원에 물어볼 점 등을 자유롭게 남겨주세요. 체크박스로 해결 여부를 표시할 수 있어요.</div>
-      <div class="field-row">
+      <div class="field-row vetnote-date-time">
         <div class="field"><span>날짜</span><input type="date" id="v_date" value="${p.date}"/></div>
         <div class="field field-time"><span>시간(선택)</span>${timeInputHtml("v_time", p.time || "")}</div>
       </div>

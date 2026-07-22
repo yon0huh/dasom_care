@@ -209,6 +209,10 @@ input,select,textarea{ font-family:inherit; }
 .field-row > .field input,
 .field-row > .field select{ width:100%; min-width:0; box-sizing:border-box; }
 .field-row > .field.field-time{ flex:0 0 132px; }
+.vetnote-date-time{ display:block; }
+.vetnote-date-time > .field{ width:100%; }
+.vetnote-date-time > .field.field-time{ width:100%; flex:none; }
+.vetnote-date-time .timepick{ max-width:180px; }
 .field-grow{ flex:1 1 auto; min-width:0; }
 input[type="time"]{ min-width:0; }
 .timepick{
