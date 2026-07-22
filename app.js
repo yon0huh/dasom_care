@@ -86,15 +86,15 @@ const dowOf = (dateStr) => new Date(dateStr + "T00:00:00").getDay();
 const scheduleAppliesToday = (sc, dow) => !sc.days || !sc.days.length || sc.days.includes(dow);
 const esc = (s) => (s || "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 
-/* ---------- lightweight numeric time picker ---------- */
+/* ---------- lightweight numeric time picker (no native OS wheel) ---------- */
 function timeInputHtml(idPrefix, value) {
   const [h, m] = (value || "").split(":");
   const hh = h !== undefined && h !== "" ? parseInt(h, 10) : "";
   const mm = m !== undefined && m !== "" ? parseInt(m, 10) : "";
   return `<div class="timepick">
-    <input type="text" inputmode="numeric" pattern="[0-9]*" maxlength="2" class="tp-h" id="${idPrefix}_h" value="${isNaN(hh) || hh === "" ? "" : String(hh).padStart(2, "0")}" placeholder="00"/>
+    <input type="text" inputmode="numeric" pattern="[0-9]*" maxlength="2" class="tp-h" id="${idPrefix}_h" value="${hh === "" ? "" : String(hh).padStart(2, "0")}" placeholder="00"/>
     <span class="tp-colon">:</span>
-    <input type="text" inputmode="numeric" pattern="[0-9]*" maxlength="2" class="tp-m" id="${idPrefix}_m" value="${isNaN(mm) || mm === "" ? "" : String(mm).padStart(2, "0")}" placeholder="00"/>
+    <input type="text" inputmode="numeric" pattern="[0-9]*" maxlength="2" class="tp-m" id="${idPrefix}_m" value="${mm === "" ? "" : String(mm).padStart(2, "0")}" placeholder="00"/>
   </div>`;
 }
 function readTimeValue(idPrefix, allowEmpty = false) {
@@ -194,6 +194,7 @@ function syncInitFirebase() {
   return Sync.db;
 }
 
+/* ---------- cloud media (Firebase Storage) ---------- */
 function syncInitStorage() {
   if (Sync.storage) return Sync.storage;
   if (typeof firebase === "undefined") return null;
@@ -394,7 +395,7 @@ const IDB = {
       const tx = db.transaction("media", "readonly");
       const req = tx.objectStore("media").get(id);
       req.onsuccess = () => resolve(req.result || null);
-      req.onerror = () => reject(tx.error);
+      req.onerror = () => reject(req.error);
     });
   },
   async delete(id) {
@@ -457,7 +458,7 @@ function loadFFmpegScript() {
     }
     const script = document.createElement("script");
     script.id = "ffmpeg-lib-script";
-    script.src = "https://unpkg.com/@ffmpeg/ffmpeg@0.11.6/dist/ffmpeg.min.js";
+    script.src = "https://unpkg.com/@ffmpeg/" + "ffmpeg@0.11.6" + "/dist/ffmpeg.min.js";
     script.onload = () => resolve();
     script.onerror = reject;
     document.head.appendChild(script);
@@ -477,22 +478,33 @@ async function getFFmpegInstance() {
   }
   return _ffmpegLoadPromise;
 }
-
 async function compressVideo(file) {
   try {
     const ffmpeg = await getFFmpegInstance();
     const { fetchFile } = window.FFmpeg;
-    const ext = (file.name && file.name.match(/\.\w+$/)) ? file.name.match(/\.\w+$/)[0] : ".mp4";
+    const ext = file.name && file.name.match(/\.\w+$/) ? file.name.match(/\.\w+$/)[0] : ".mp4";
     const inputName = "in_" + uid() + ext;
     const outputName = "out_" + uid() + ".mp4";
     ffmpeg.FS("writeFile", inputName, await fetchFile(file));
     await ffmpeg.run(
-      "-i", inputName,
-      "-vf", "scale='min(960,iw)':'min(960,ih)':force_original_aspect_ratio=decrease",
-      "-r", "24",
-      "-c:v", "libx264", "-preset", "veryfast", "-crf", "30",
-      "-c:a", "aac", "-b:a", "96k",
-      "-movflags", "+faststart",
+      "-i",
+      inputName,
+      "-vf",
+      "scale='min(960,iw)':'min(960,ih)':force_original_aspect_ratio=decrease",
+      "-r",
+      "24",
+      "-c:v",
+      "libx264",
+      "-preset",
+      "veryfast",
+      "-crf",
+      "30",
+      "-c:a",
+      "aac",
+      "-b:a",
+      "96k",
+      "-movflags",
+      "+faststart",
       outputName
     );
     const data = ffmpeg.FS("readFile", outputName);
@@ -539,6 +551,7 @@ function saveVetNotes() {
   LS.set("dasom_vetnotes", state.vetNotes);
 }
 
+/* 먹은 양 계산 */
 function eatenAmount(e) {
   const offered = num(e.amountG);
   if (e.category !== "food") return offered;
@@ -586,6 +599,7 @@ function render() {
     ${renderTabbar()}
     ${state.modal ? renderModal() : ""}
   `;
+  bindGlobalEvents();
   bindTimeAutoAdvance(root);
 }
 
@@ -1243,8 +1257,9 @@ function renderVetNoteModal(p) {
 
 /* ============================= EVENTS ============================= */
 function bindGlobalEvents() {
-  if (root._delegatedBound) return;
-  root._delegatedBound = true;
+  document.querySelectorAll("[data-action]").forEach((el) => {
+    if (el._bound) return;
+  });
 
   root.onclick = async (e) => {
     const t = e.target.closest("[data-action]");
@@ -1461,6 +1476,9 @@ function bindGlobalEvents() {
     }
   };
 
+  if (root._delegatedBound) return;
+  root._delegatedBound = true;
+
   root.addEventListener("click", (e) => {
     const dayBtn = e.target.closest("[data-day]");
     if (dayBtn) {
@@ -1524,12 +1542,8 @@ function updateEntryHint() {
 
   const hint = document.getElementById("f_calc_hint");
   if (!hint) return;
-  const prodEl = document.getElementById("f_product");
-  const waterEl = document.getElementById("f_water");
-  if (!prodEl || !waterEl) return;
-
-  const pid = prodEl.value;
-  const water = num(waterEl.value);
+  const pid = document.getElementById("f_product").value;
+  const water = num(document.getElementById("f_water").value);
   const p = state.products.find((pp) => pp.id === pid);
   if (!p || !eaten) {
     hint.innerHTML = "";
@@ -1560,17 +1574,16 @@ function closeModal() {
 }
 
 function saveEntryFromForm(id, fromSchedule) {
-  const labelEl = document.getElementById("f_label");
-  if (!labelEl || !labelEl.value.trim()) return;
-  const label = labelEl.value.trim();
+  const label = document.getElementById("f_label").value.trim();
+  if (!label) return;
   const time = readTimeValue("f_time");
   const category = document.querySelector("#f_category_row .pillbtn.active")?.getAttribute("data-cat") || "food";
-  const productId = document.getElementById("f_product")?.value || null;
-  const amountG = document.getElementById("f_amount")?.value || "";
-  const waterMl = document.getElementById("f_water")?.value || "";
-  const note = document.getElementById("f_note")?.value.trim() || "";
+  const productId = document.getElementById("f_product").value || null;
+  const amountG = document.getElementById("f_amount").value;
+  const waterMl = document.getElementById("f_water").value;
+  const note = document.getElementById("f_note").value.trim();
   const foodStatus = category === "food" ? document.querySelector("#f_foodstatus_row .pillbtn.active")?.getAttribute("data-status") || "all" : undefined;
-  const leftoverG = category === "food" && foodStatus === "partial" ? document.getElementById("f_leftover")?.value : undefined;
+  const leftoverG = category === "food" && foodStatus === "partial" ? document.getElementById("f_leftover").value : undefined;
 
   const entries = getEntries(state.date);
   const entry = { id: id || uid(), time, label, category, productId, amountG, waterMl, note, foodStatus, leftoverG, fromSchedule: fromSchedule || undefined };
@@ -1584,16 +1597,15 @@ function saveEntryFromForm(id, fromSchedule) {
 }
 
 function saveProductFromForm(id) {
-  const nameEl = document.getElementById("p_name");
-  if (!nameEl || !nameEl.value.trim()) return;
-  const name = nameEl.value.trim();
+  const name = document.getElementById("p_name").value.trim();
+  if (!name) return;
   const product = {
     id: id || uid(),
     name,
-    waterPct: document.getElementById("p_water")?.value || "",
-    proteinPct: document.getElementById("p_protein")?.value || "",
-    fatPct: document.getElementById("p_fat")?.value || "",
-    kcalPer100g: document.getElementById("p_kcal")?.value || "",
+    waterPct: document.getElementById("p_water").value,
+    proteinPct: document.getElementById("p_protein").value,
+    fatPct: document.getElementById("p_fat").value,
+    kcalPer100g: document.getElementById("p_kcal").value,
   };
   const idx = state.products.findIndex((p) => p.id === product.id);
   if (idx >= 0) state.products[idx] = product;
@@ -1604,9 +1616,8 @@ function saveProductFromForm(id) {
 }
 
 function saveScheduleFromForm(id) {
-  const labelEl = document.getElementById("s_label");
-  if (!labelEl || !labelEl.value.trim()) return;
-  const label = labelEl.value.trim();
+  const label = document.getElementById("s_label").value.trim();
+  if (!label) return;
   const days = Array.from(document.querySelectorAll("#s_days_row .pillbtn.active"))
     .map((b) => parseInt(b.getAttribute("data-day"), 10))
     .sort((a, b) => a - b);
@@ -1670,7 +1681,7 @@ async function saveDiaryFromForm(date) {
     alert("영상 압축이 끝날 때까지 잠시만 기다려주세요.");
     return;
   }
-  const text = document.getElementById("d_text")?.value.trim() || "";
+  const text = document.getElementById("d_text").value.trim();
   const existing = getDiary(date);
   const newIds = [];
   for (const m of state.diaryMediaDraft) {
@@ -1705,10 +1716,10 @@ async function saveVetNoteFromForm(id) {
     alert("영상 압축이 끝날 때까지 잠시만 기다려주세요.");
     return;
   }
-  const date = document.getElementById("v_date")?.value || todayStr();
+  const date = document.getElementById("v_date").value || todayStr();
   const time = readTimeValue("v_time", true);
-  const text = document.getElementById("v_text")?.value.trim() || "";
-  const resolved = document.getElementById("v_resolved")?.checked || false;
+  const text = document.getElementById("v_text").value.trim();
+  const resolved = document.getElementById("v_resolved").checked;
   const existing = id ? state.vetNotes.find((n) => n.id === id) : null;
   const newIds = [];
   for (const m of state.vetMediaDraft) {
@@ -1747,7 +1758,6 @@ if ("serviceWorker" in navigator) {
   });
 }
 
-bindGlobalEvents();
 render();
 if (state.tab === "diary") mountDiaryMedia();
 if (state.tab === "vetnote") mountVetMedia();
