@@ -86,6 +86,45 @@ const dowOf = (dateStr) => new Date(dateStr + "T00:00:00").getDay();
 const scheduleAppliesToday = (sc, dow) => !sc.days || !sc.days.length || sc.days.includes(dow);
 const esc = (s) => (s || "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 
+/* ---------- lightweight numeric time picker (no native OS wheel) ---------- */
+function timeInputHtml(idPrefix, value) {
+  const [h, m] = (value || "").split(":");
+  const hh = h !== undefined && h !== "" ? parseInt(h, 10) : "";
+  const mm = m !== undefined && m !== "" ? parseInt(m, 10) : "";
+  return `<div class="timepick">
+    <input type="text" inputmode="numeric" pattern="[0-9]*" maxlength="2" class="tp-h" id="${idPrefix}_h" value="${hh === "" ? "" : String(hh).padStart(2, "0")}" placeholder="00"/>
+    <span class="tp-colon">:</span>
+    <input type="text" inputmode="numeric" pattern="[0-9]*" maxlength="2" class="tp-m" id="${idPrefix}_m" value="${mm === "" ? "" : String(mm).padStart(2, "0")}" placeholder="00"/>
+  </div>`;
+}
+function readTimeValue(idPrefix, allowEmpty = false) {
+  const hEl = document.getElementById(idPrefix + "_h");
+  const mEl = document.getElementById(idPrefix + "_m");
+  if (!hEl || !mEl) return "";
+  if (allowEmpty && !hEl.value.trim() && !mEl.value.trim()) return "";
+  const h = Math.min(23, Math.max(0, parseInt(hEl.value || "0", 10) || 0));
+  const m = Math.min(59, Math.max(0, parseInt(mEl.value || "0", 10) || 0));
+  return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`;
+}
+function bindTimeAutoAdvance(container) {
+  container.querySelectorAll(".tp-h, .tp-m").forEach((el) => {
+    el.addEventListener("input", () => {
+      el.value = el.value.replace(/[^0-9]/g, "").slice(0, 2);
+      if (el.value.length === 2 && el.classList.contains("tp-h")) {
+        const m = el.parentElement.querySelector(".tp-m");
+        if (m) m.focus();
+      }
+    });
+    el.addEventListener("blur", () => {
+      if (el.value === "") return;
+      const max = el.classList.contains("tp-h") ? 23 : 59;
+      const v = Math.min(max, Math.max(0, parseInt(el.value, 10) || 0));
+      el.value = String(v).padStart(2, "0");
+    });
+    el.addEventListener("focus", () => el.select());
+  });
+}
+
 /* ---------- localStorage layer ---------- */
 const LS = {
   get(key, fallback) {
@@ -134,6 +173,7 @@ const SYNC_SKIP_KEY = "dasom_household_code";
 
 const Sync = {
   db: null,
+  storage: null,
   docRef: null,
   code: null, // set later, after LS is fully defined below
   active: false,
@@ -155,7 +195,68 @@ function syncInitFirebase() {
   return Sync.db;
 }
 
-// 동기화 대상: 제품/일정/목표/특이사항 + 날짜별 식사기록/일지 (사진·영상은 기기 저장이라 제외)
+/* ---------- cloud media (Firebase Storage): 가족 코드로 연결된 기기끼리 사진/영상 공유 ---------- */
+function syncInitStorage() {
+  if (Sync.storage) return Sync.storage;
+  if (typeof firebase === "undefined") return null;
+  if (!firebase.apps.length) firebase.initializeApp(FIREBASE_CONFIG);
+  try {
+    Sync.storage = firebase.storage();
+    return Sync.storage;
+  } catch (e) {
+    console.error("Storage 초기화 실패", e);
+    return null;
+  }
+}
+function mediaStoragePath(id) {
+  return `families/${Sync.code}/media/${id}`;
+}
+async function uploadMediaToCloud(id, mime, blob) {
+  if (!Sync.active || !Sync.code) return;
+  const storage = syncInitStorage();
+  if (!storage) return;
+  try {
+    await storage.ref().child(mediaStoragePath(id)).put(blob, { contentType: mime });
+  } catch (err) {
+    console.error("사진/영상 업로드 실패", err);
+  }
+}
+async function fetchMediaFromCloud(id) {
+  if (!Sync.active || !Sync.code) return null;
+  const storage = syncInitStorage();
+  if (!storage) return null;
+  try {
+    const url = await storage.ref().child(mediaStoragePath(id)).getDownloadURL();
+    const res = await fetch(url);
+    return await res.blob();
+  } catch (err) {
+    return null;
+  }
+}
+async function deleteMediaFromCloud(id) {
+  if (!Sync.active || !Sync.code) return;
+  const storage = syncInitStorage();
+  if (!storage) return;
+  try {
+    await storage.ref().child(mediaStoragePath(id)).delete();
+  } catch (err) {
+    // 이미 없거나 권한 문제면 조용히 넘어감
+  }
+}
+async function getMediaRecord(id) {
+  try {
+    const local = await IDB.get(id);
+    if (local) return local;
+  } catch (e) {}
+  const blob = await fetchMediaFromCloud(id);
+  if (!blob) return null;
+  const type = blob.type && blob.type.startsWith("video/") ? "video" : "image";
+  const rec = { id, type, mime: blob.type, blob };
+  IDB.put(rec).catch(() => {});
+  return rec;
+}
+
+// 동기화 대상: 제품/일정/목표/특이사항 + 날짜별 식사기록/일지 텍스트 (사진·영상 실제 파일은 Firebase Storage로 별도 업로드/다운로드됨)
 function collectSyncableState() {
   const out = {};
   out.dasom_products = LS.get("dasom_products", []);
@@ -348,6 +449,70 @@ function compressImage(file, maxDim = 1080, quality = 0.72) {
   });
 }
 
+/* ---------- video compression (ffmpeg.wasm, lazy-loaded) ---------- */
+let _ffmpegInstance = null;
+let _ffmpegLoadPromise = null;
+function loadFFmpegScript() {
+  return new Promise((resolve, reject) => {
+    if (window.FFmpeg) return resolve();
+    const existing = document.getElementById("ffmpeg-lib-script");
+    if (existing) {
+      existing.addEventListener("load", () => resolve());
+      existing.addEventListener("error", reject);
+      return;
+    }
+    const script = document.createElement("script");
+    script.id = "ffmpeg-lib-script";
+    script.src = "https://unpkg.com/@ffmpeg/" + "ffmpeg@0.11.6" + "/dist/ffmpeg.min.js";
+    script.onload = () => resolve();
+    script.onerror = reject;
+    document.head.appendChild(script);
+  });
+}
+async function getFFmpegInstance() {
+  if (_ffmpegInstance) return _ffmpegInstance;
+  if (!_ffmpegLoadPromise) {
+    _ffmpegLoadPromise = (async () => {
+      await loadFFmpegScript();
+      const { createFFmpeg } = window.FFmpeg;
+      const ffmpeg = createFFmpeg({ log: false });
+      await ffmpeg.load();
+      _ffmpegInstance = ffmpeg;
+      return ffmpeg;
+    })();
+  }
+  return _ffmpegLoadPromise;
+}
+// 최대 960px 변, 24fps, CRF30로 재인코딩 — 화질은 유지하면서 용량을 크게 줄임. 실패하면 원본을 그대로 사용.
+async function compressVideo(file) {
+  try {
+    const ffmpeg = await getFFmpegInstance();
+    const { fetchFile } = window.FFmpeg;
+    const ext = (file.name && file.name.match(/\.\w+$/)) ? file.name.match(/\.\w+$/)[0] : ".mp4";
+    const inputName = "in_" + uid() + ext;
+    const outputName = "out_" + uid() + ".mp4";
+    ffmpeg.FS("writeFile", inputName, await fetchFile(file));
+    await ffmpeg.run(
+      "-i", inputName,
+      "-vf", "scale='min(960,iw)':'min(960,ih)':force_original_aspect_ratio=decrease",
+      "-r", "24",
+      "-c:v", "libx264", "-preset", "veryfast", "-crf", "30",
+      "-c:a", "aac", "-b:a", "96k",
+      "-movflags", "+faststart",
+      outputName
+    );
+    const data = ffmpeg.FS("readFile", outputName);
+    try {
+      ffmpeg.FS("unlink", inputName);
+      ffmpeg.FS("unlink", outputName);
+    } catch (e) {}
+    return new Blob([data.buffer], { type: "video/mp4" });
+  } catch (err) {
+    console.error("영상 압축 실패, 원본 그대로 사용", err);
+    return file;
+  }
+}
+
 /* ============================= STATE ============================= */
 const state = {
   tab: "today",
@@ -429,6 +594,7 @@ function render() {
     ${state.modal ? renderModal() : ""}
   `;
   bindGlobalEvents();
+  bindTimeAutoAdvance(root);
 }
 
 function renderHeader() {
@@ -727,7 +893,7 @@ async function mountDiaryMedia() {
     if (!d.mediaIds || !d.mediaIds.length) continue;
     const html = [];
     for (const id of d.mediaIds) {
-      const rec = await IDB.get(id);
+      const rec = await getMediaRecord(id);
       if (!rec) continue;
       const url = URL.createObjectURL(rec.blob);
       if (rec.type === "video") {
@@ -789,7 +955,7 @@ async function mountVetMedia() {
     if (!n || !n.mediaIds || !n.mediaIds.length) continue;
     const html = [];
     for (const mid of n.mediaIds) {
-      const rec = await IDB.get(mid);
+      const rec = await getMediaRecord(mid);
       if (!rec) continue;
       const url = URL.createObjectURL(rec.blob);
       if (rec.type === "video") {
@@ -917,7 +1083,7 @@ function renderSyncModal() {
   <div class="modal-backdrop" data-action="backdrop">
     <div class="modal" data-stop>
       <div class="modal-head"><h3 class="serif">가족과 공유하기</h3><button data-action="close-modal">${icon("x", 20)}</button></div>
-      <div class="hint">가족 코드를 새로 만들면 지금까지의 기록이 클라우드에 올라가고, 가족 폰에서 같은 코드로 연결하면 그 기록을 그대로 불러와서 실시간으로 함께 보고 기록할 수 있어요.<br/>주의: 이미 사용 중인 코드에 연결하면 이 기기에 있던 기록은 클라우드 기록으로 대체돼요. 사진/영상은 아직 이 기기에만 저장돼요.</div>
+      <div class="hint">가족 코드를 새로 만들면 지금까지의 기록이 클라우드에 올라가고, 가족 폰에서 같은 코드로 연결하면 그 기록을 그대로 불러와서 실시간으로 함께 보고 기록할 수 있어요. 사진/영상도 함께 공유돼요.<br/>주의: 이미 사용 중인 코드에 연결하면 이 기기에 있던 기록은 클라우드 기록으로 대체돼요.</div>
       <div class="field"><span>가족 코드</span>
         <input id="sync_code" value="${esc(Sync.code || "")}" placeholder="예: DASOM01 (비워두면 새로 생성)" maxlength="10" style="text-transform:uppercase"/>
       </div>
@@ -951,8 +1117,8 @@ function renderEntryModal(p) {
     <div class="modal" data-stop>
       <div class="modal-head"><h3 class="serif">${isEdit ? "기록 수정" : "기록 추가"}</h3><button data-action="close-modal">${icon("x", 20)}</button></div>
       <div class="field-row">
-        <div class="field"><span>시간</span><input type="time" id="f_time" value="${p.time}"/></div>
-        <div class="field"><span>이름</span><input id="f_label" value="${esc(p.label || "")}" placeholder="예: 아침 식사"/></div>
+        <div class="field field-time"><span>시간</span>${timeInputHtml("f_time", p.time)}</div>
+        <div class="field field-grow"><span>이름</span><input id="f_label" value="${esc(p.label || "")}" placeholder="예: 아침 식사"/></div>
       </div>
       <div class="field"><span>분류</span>
         <div class="pillrow" id="f_category_row">
@@ -1010,8 +1176,8 @@ function renderScheduleModal(p) {
     <div class="modal" data-stop>
       <div class="modal-head"><h3 class="serif">일정 항목</h3><button data-action="close-modal">${icon("x", 20)}</button></div>
       <div class="field-row">
-        <div class="field"><span>시간</span><input type="time" id="s_time" value="${p.time}"/></div>
-        <div class="field"><span>이름</span><input id="s_label" value="${esc(p.label || "")}"/></div>
+        <div class="field field-time"><span>시간</span>${timeInputHtml("s_time", p.time)}</div>
+        <div class="field field-grow"><span>이름</span><input id="s_label" value="${esc(p.label || "")}"/></div>
       </div>
       <div class="field"><span>분류</span>
         <div class="pillrow" id="s_category_row">
@@ -1028,16 +1194,20 @@ function renderScheduleModal(p) {
   </div>`;
 }
 
+function mediaTileHtml(m, removeAction) {
+  return `
+    <div class="p ${m.pending ? "pending" : ""}">
+      ${m.type === "video" ? `<video src="${m.url}" muted></video>` : `<img src="${m.url}"/>`}
+      ${
+        m.pending
+          ? `<div class="pending-overlay">${icon("loader", 20, "spin")}<span>압축 중</span></div>`
+          : `<button class="rm" data-action="${removeAction}" data-tmp="${m.tmpId}">${icon("x", 11)}</button>`
+      }
+    </div>`;
+}
+
 function renderDiaryModal(p) {
-  const mediaPreview = state.diaryMediaDraft
-    .map(
-      (m) => `
-      <div class="p">
-        ${m.type === "video" ? `<video src="${m.url}" muted></video>` : `<img src="${m.url}"/>`}
-        <button class="rm" data-action="rm-draft-media" data-tmp="${m.tmpId}">${icon("x", 11)}</button>
-      </div>`
-    )
-    .join("");
+  const mediaPreview = state.diaryMediaDraft.map((m) => mediaTileHtml(m, "rm-draft-media")).join("");
   return `
   <div class="modal-backdrop" data-action="backdrop">
     <div class="modal" data-stop>
@@ -1055,15 +1225,7 @@ function renderDiaryModal(p) {
 }
 
 function renderVetNoteModal(p) {
-  const draftMedia = state.vetMediaDraft
-    .map(
-      (m) => `
-      <div class="p">
-        ${m.type === "video" ? `<video src="${m.url}" muted></video>` : `<img src="${m.url}"/>`}
-        <button class="rm" data-action="rm-draft-vetmedia" data-tmp="${m.tmpId}">${icon("x", 11)}</button>
-      </div>`
-    )
-    .join("");
+  const draftMedia = state.vetMediaDraft.map((m) => mediaTileHtml(m, "rm-draft-vetmedia")).join("");
   return `
   <div class="modal-backdrop" data-action="backdrop">
     <div class="modal" data-stop>
@@ -1071,7 +1233,7 @@ function renderVetNoteModal(p) {
       <div class="hint">변 상태, 컨디션 변화, 병원에 물어볼 점 등을 자유롭게 남겨주세요. 체크박스로 해결 여부를 표시할 수 있어요.</div>
       <div class="field-row">
         <div class="field"><span>날짜</span><input type="date" id="v_date" value="${p.date}"/></div>
-        <div class="field"><span>시간(선택)</span><input type="time" id="v_time" value="${p.time || ""}"/></div>
+        <div class="field"><span>시간(선택)</span>${timeInputHtml("v_time", p.time || "")}</div>
       </div>
       <div class="field"><span>내용</span><textarea id="v_text" placeholder="예: 변이 묽고 색이 진해요. 오늘 컨디션 처짐.">${esc(p.text || "")}</textarea></div>
       ${p.mediaIds && p.mediaIds.length ? `<p class="muted" style="font-size:11px;margin:-4px 0 10px">이미 첨부된 사진/영상 ${p.mediaIds.length}개가 있어요. 여기서는 새 사진만 추가돼요.</p>` : ""}
@@ -1238,7 +1400,10 @@ function bindGlobalEvents() {
       const date = t.getAttribute("data-date");
       if (!confirm("이 날짜의 일지를 삭제할까요? 사진/영상도 함께 삭제돼요.")) return;
       const d = getDiary(date);
-      for (const id of d.mediaIds || []) await IDB.delete(id);
+      for (const id of d.mediaIds || []) {
+        await IDB.delete(id);
+        deleteMediaFromCloud(id);
+      }
       LS.remove(`dasom_diary_${date}`);
       render();
       return;
@@ -1271,7 +1436,10 @@ function bindGlobalEvents() {
       if (!confirm("이 특이사항을 삭제할까요? 첨부된 사진/영상도 함께 삭제돼요.")) return;
       const n = state.vetNotes.find((x) => x.id === t.getAttribute("data-id"));
       if (n) {
-        for (const id of n.mediaIds || []) await IDB.delete(id);
+        for (const id of n.mediaIds || []) {
+          await IDB.delete(id);
+          deleteMediaFromCloud(id);
+        }
         state.vetNotes = state.vetNotes.filter((x) => x.id !== n.id);
         saveVetNotes();
         render();
@@ -1406,7 +1574,7 @@ function closeModal() {
 function saveEntryFromForm(id, fromSchedule) {
   const label = document.getElementById("f_label").value.trim();
   if (!label) return;
-  const time = document.getElementById("f_time").value;
+  const time = readTimeValue("f_time");
   const category = document.querySelector("#f_category_row .pillbtn.active")?.getAttribute("data-cat") || "food";
   const productId = document.getElementById("f_product").value || null;
   const amountG = document.getElementById("f_amount").value;
@@ -1453,7 +1621,7 @@ function saveScheduleFromForm(id) {
     .sort((a, b) => a - b);
   const item = {
     _id: id || uid(),
-    time: document.getElementById("s_time").value,
+    time: readTimeValue("s_time"),
     label,
     category: document.querySelector("#s_category_row .pillbtn.active")?.getAttribute("data-cat") || "food",
     days,
@@ -1467,38 +1635,50 @@ function saveScheduleFromForm(id) {
   render();
 }
 
-async function handleDiaryFiles(fileList) {
+async function handleMediaFiles(fileList, getDraftArray, previewElId, renderPreviewFn) {
   for (const file of Array.from(fileList)) {
     try {
       if (file.type.startsWith("video/")) {
+        const tmpId = uid();
         const url = URL.createObjectURL(file);
-        state.diaryMediaDraft.push({ tmpId: uid(), blob: file, url, type: "video" });
+        getDraftArray().push({ tmpId, blob: file, url, type: "video", pending: true });
+        const preview = document.getElementById(previewElId);
+        if (preview) preview.outerHTML = renderPreviewFn();
+        compressVideo(file).then((compressedBlob) => {
+          const item = getDraftArray().find((m) => m.tmpId === tmpId);
+          if (!item) return; // 압축 중 사용자가 삭제한 경우
+          URL.revokeObjectURL(item.url);
+          item.blob = compressedBlob;
+          item.url = URL.createObjectURL(compressedBlob);
+          item.pending = false;
+          const el = document.getElementById(previewElId);
+          if (el) el.outerHTML = renderPreviewFn();
+        });
       } else if (file.type.startsWith("image/")) {
         const blob = await compressImage(file);
         const url = URL.createObjectURL(blob);
-        state.diaryMediaDraft.push({ tmpId: uid(), blob, url, type: "image" });
+        getDraftArray().push({ tmpId: uid(), blob, url, type: "image" });
       }
     } catch (err) {
       console.error(err);
     }
   }
-  const preview = document.getElementById("d_preview");
-  if (preview) preview.outerHTML = renderDiaryPreviewOnly();
+  const preview = document.getElementById(previewElId);
+  if (preview) preview.outerHTML = renderPreviewFn();
+}
+async function handleDiaryFiles(fileList) {
+  await handleMediaFiles(fileList, () => state.diaryMediaDraft, "d_preview", renderDiaryPreviewOnly);
 }
 function renderDiaryPreviewOnly() {
-  const inner = state.diaryMediaDraft
-    .map(
-      (m) => `
-      <div class="p">
-        ${m.type === "video" ? `<video src="${m.url}" muted></video>` : `<img src="${m.url}"/>`}
-        <button class="rm" data-action="rm-draft-media" data-tmp="${m.tmpId}">${icon("x", 11)}</button>
-      </div>`
-    )
-    .join("");
+  const inner = state.diaryMediaDraft.map((m) => mediaTileHtml(m, "rm-draft-media")).join("");
   return `<div class="pick-grid" id="d_preview">${inner}</div>`;
 }
 
 async function saveDiaryFromForm(date) {
+  if (state.diaryMediaDraft.some((m) => m.pending)) {
+    alert("영상 압축이 끝날 때까지 잠시만 기다려주세요.");
+    return;
+  }
   const text = document.getElementById("d_text").value.trim();
   const existing = getDiary(date);
   const newIds = [];
@@ -1506,6 +1686,7 @@ async function saveDiaryFromForm(date) {
     const id = uid();
     try {
       await IDB.put({ id, date, type: m.type, mime: m.blob.type, blob: m.blob });
+      uploadMediaToCloud(id, m.blob.type, m.blob);
       newIds.push(id);
     } catch (err) {
       alert("사진/영상 저장에 실패했어요. 용량이 너무 크지 않은지 확인해주세요.");
@@ -1521,39 +1702,20 @@ async function saveDiaryFromForm(date) {
 }
 
 async function handleVetFiles(fileList) {
-  for (const file of Array.from(fileList)) {
-    try {
-      if (file.type.startsWith("video/")) {
-        const url = URL.createObjectURL(file);
-        state.vetMediaDraft.push({ tmpId: uid(), blob: file, url, type: "video" });
-      } else if (file.type.startsWith("image/")) {
-        const blob = await compressImage(file);
-        const url = URL.createObjectURL(blob);
-        state.vetMediaDraft.push({ tmpId: uid(), blob, url, type: "image" });
-      }
-    } catch (err) {
-      console.error(err);
-    }
-  }
-  const preview = document.getElementById("v_preview");
-  if (preview) preview.outerHTML = renderVetPreviewOnly();
+  await handleMediaFiles(fileList, () => state.vetMediaDraft, "v_preview", renderVetPreviewOnly);
 }
 function renderVetPreviewOnly() {
-  const inner = state.vetMediaDraft
-    .map(
-      (m) => `
-      <div class="p">
-        ${m.type === "video" ? `<video src="${m.url}" muted></video>` : `<img src="${m.url}"/>`}
-        <button class="rm" data-action="rm-draft-vetmedia" data-tmp="${m.tmpId}">${icon("x", 11)}</button>
-      </div>`
-    )
-    .join("");
+  const inner = state.vetMediaDraft.map((m) => mediaTileHtml(m, "rm-draft-vetmedia")).join("");
   return `<div class="pick-grid" id="v_preview">${inner}</div>`;
 }
 
 async function saveVetNoteFromForm(id) {
+  if (state.vetMediaDraft.some((m) => m.pending)) {
+    alert("영상 압축이 끝날 때까지 잠시만 기다려주세요.");
+    return;
+  }
   const date = document.getElementById("v_date").value || todayStr();
-  const time = document.getElementById("v_time").value;
+  const time = readTimeValue("v_time", true);
   const text = document.getElementById("v_text").value.trim();
   const resolved = document.getElementById("v_resolved").checked;
   const existing = id ? state.vetNotes.find((n) => n.id === id) : null;
@@ -1562,6 +1724,7 @@ async function saveVetNoteFromForm(id) {
     const mid = uid();
     try {
       await IDB.put({ id: mid, date, type: m.type, mime: m.blob.type, blob: m.blob });
+      uploadMediaToCloud(mid, m.blob.type, m.blob);
       newIds.push(mid);
     } catch (err) {
       alert("사진/영상 저장에 실패했어요. 용량이 너무 크지 않은지 확인해주세요.");
