@@ -875,19 +875,19 @@ function renderToday() {
         <button class="summary-edit" data-action="toggle-targets">${icon("pencil", 14)}</button>
       </div>
       <div class="stat-grid">
-        <div class="stat"><div class="lab">${icon("droplet", 13)} 총 수분</div>
+        <div class="stat"><div class="lab">총 수분</div>
           <div class="val">${s.water.toFixed(1)}<small> ml</small></div>
           ${wPct !== null ? `<div class="bar"><i style="width:${wPct}%"></i></div>` : ""}
         </div>
-        <div class="stat"><div class="lab">${icon("drum", 13)} 총 단백질</div>
+        <div class="stat"><div class="lab">총 단백질</div>
           <div class="val">${s.protein.toFixed(1)}<small> g</small></div>
           ${pPct !== null ? `<div class="bar"><i style="width:${pPct}%"></i></div>` : ""}
         </div>
-        <div class="stat"><div class="lab">${icon("flame", 13)} 칼로리</div>
+        <div class="stat"><div class="lab">칼로리</div>
           <div class="val">${s.kcal.toFixed(0)}<small> kcal</small></div>
           ${kPct !== null ? `<div class="bar"><i style="width:${kPct}%"></i></div>` : ""}
         </div>
-        <div class="stat"><div class="lab">${icon("utensils", 13)} 총 제공량</div>
+        <div class="stat"><div class="lab">총 제공량</div>
           <div class="val">${s.foodOfferedG.toFixed(0)}<small> g</small></div>
           ${fPct !== null ? `<div class="bar"><i style="width:${fPct}%"></i></div>` : ""}
         </div>
@@ -896,7 +896,7 @@ function renderToday() {
         eatRatePct !== null
           ? `<div class="eatrate">
               <div class="eatrate-top">
-                <span>${icon("check", 13)} 오늘 식사 섭취율</span>
+                <span>오늘 식사 섭취율</span>
                 <span class="pct">${eatRatePct}%</span>
               </div>
               <div class="bar"><i style="width:${Math.min(100, eatRatePct)}%"></i></div>
