@@ -257,8 +257,12 @@ input[type="date"] {
   -webkit-appearance: none;
 }
 
-.field-row{ display:flex; gap:10px; width:100%; margin-bottom:16px; }
+.field-row{ display:flex; gap:10px; width:100%; margin-bottom:24px !important; }
 .field-row > .field{ flex:1; min-width:0; }
+
+/* 남긴 물/밥 섹션과 예상 섭취량 사이 간격 */
+#f_leftover_wrap { display: flex; flex-direction: column; gap: 16px; }
+#f_leftover_wrap > .field { margin-top: 0; }
 
 /* 특이사항 날짜/시간 두 줄 배치 */
 .vetnote-date-time{ 
