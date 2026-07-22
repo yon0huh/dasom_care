@@ -617,6 +617,7 @@ const state = {
   targets: LS.get("dasom_targets", { water: "", protein: "", kcal: "", food: "" }),
   modal: null, // {type:'entry'|'product'|'schedule'|'diary'|'vetnote', payload:{...}}
   diaryMediaDraft: [], // [{tmpId, blob, url, type}]
+  entryFormProducts: [], // [{id, amountG}] for multi-product selection in entry modal
   vetNotes: LS.get("dasom_vetnotes", []),
   vetMediaDraft: [],
   showTargetEdit: false,
@@ -998,13 +999,21 @@ async function mountDiaryMedia() {
     if (!d.mediaIds || !d.mediaIds.length) continue;
     const html = [];
     for (const id of d.mediaIds) {
-      const rec = await getMediaRecord(id);
-      if (!rec) continue;
-      const url = URL.createObjectURL(rec.blob);
-      if (rec.type === "video") {
-        html.push(`<div class="m"><video src="${url}" muted playsinline preload="metadata"></video><span class="vic">${icon("play", 11)}</span></div>`);
-      } else {
-        html.push(`<div class="m"><img src="${url}"/></div>`);
+      try {
+        const rec = await getMediaRecord(id);
+        if (!rec) {
+          html.push(`<div class="m" style="background:#ddd;display:flex;align-items:center;justify-content:center"><span style="font-size:11px;color:#666">사진 로드 실패</span></div>`);
+          continue;
+        }
+        const url = URL.createObjectURL(rec.blob);
+        if (rec.type === "video") {
+          html.push(`<a href="${url}" target="_blank" style="text-decoration:none"><div class="m"><video src="${url}" muted playsinline preload="metadata"></video><span class="vic">${icon("play", 11)}</span></div></a>`);
+        } else {
+          html.push(`<a href="${url}" target="_blank" style="text-decoration:none"><div class="m"><img src="${url}" style="cursor:pointer"/></div></a>`);
+        }
+      } catch (err) {
+        console.error("media mount error", err);
+        html.push(`<div class="m" style="background:#ddd;display:flex;align-items:center;justify-content:center"><span style="font-size:11px;color:#666">오류</span></div>`);
       }
     }
     el.innerHTML = html.join("");
@@ -1060,13 +1069,21 @@ async function mountVetMedia() {
     if (!n || !n.mediaIds || !n.mediaIds.length) continue;
     const html = [];
     for (const mid of n.mediaIds) {
-      const rec = await getMediaRecord(mid);
-      if (!rec) continue;
-      const url = URL.createObjectURL(rec.blob);
-      if (rec.type === "video") {
-        html.push(`<div class="m"><video src="${url}" muted playsinline preload="metadata"></video></div>`);
-      } else {
-        html.push(`<div class="m"><img src="${url}"/></div>`);
+      try {
+        const rec = await getMediaRecord(mid);
+        if (!rec) {
+          html.push(`<div class="m" style="background:#ddd;display:flex;align-items:center;justify-content:center"><span style="font-size:11px;color:#666">사진 로드 실패</span></div>`);
+          continue;
+        }
+        const url = URL.createObjectURL(rec.blob);
+        if (rec.type === "video") {
+          html.push(`<a href="${url}" target="_blank" style="text-decoration:none"><div class="m"><video src="${url}" muted playsinline preload="metadata"></video><span class="vic">${icon("play", 11)}</span></div></a>`);
+        } else {
+          html.push(`<a href="${url}" target="_blank" style="text-decoration:none"><div class="m"><img src="${url}" style="cursor:pointer"/></div></a>`);
+        }
+      } catch (err) {
+        console.error("vet media mount error", err);
+        html.push(`<div class="m" style="background:#ddd;display:flex;align-items:center;justify-content:center"><span style="font-size:11px;color:#666">오류</span></div>`);
       }
     }
     el.innerHTML = html.join("");
@@ -1213,11 +1230,28 @@ function renderModal() {
 
 function renderEntryModal(p) {
   const isEdit = !!p.id;
-  const productOptions = state.products.map((pp) => `<option value="${pp.id}" ${p.productId === pp.id ? "selected" : ""}>${esc(pp.name)}</option>`).join("");
+  const productOptions = state.products.map((pp) => `<option value="${pp.id}">${esc(pp.name)}</option>`).join("");
   const isFood = (p.category || "food") === "food";
   const status = p.foodStatus || "all";
-  const eatenNow = isFood ? eatenAmount({ category: "food", amountG: p.amountG, foodStatus: status, leftoverG: p.leftoverG }) : 0;
+  
+  // 총 제공량 계산 (여러 제품의 합)
+  const totalAmount = state.entryFormProducts.reduce((sum, prod) => sum + num(prod.amountG), 0);
+  const eatenNow = isFood ? eatenAmount({ category: "food", amountG: totalAmount, foodStatus: status, leftoverG: p.leftoverG }) : 0;
   const eatenWaterNow = isFood ? Math.max(0, num(p.waterMl) - num(p.leftoverWaterMl)) : 0;
+  
+  // 추가된 제품 목록 HTML
+  const productsListHtml = state.entryFormProducts
+    .map((prod, idx) => {
+      const prodData = state.products.find((pp) => pp.id === prod.id);
+      const prodName = prodData ? prodData.name : "(알 수 없음)";
+      return `<div style="display:flex;gap:8px;align-items:center;background:var(--surface-alt);padding:8px;border-radius:10px;margin-bottom:6px">
+        <span style="flex:1;font-size:13px">${esc(prodName)}</span>
+        <input type="number" inputmode="decimal" data-product-idx="${idx}" value="${prod.amountG || ""}" placeholder="g" style="width:50px;padding:4px;font-size:12px;border:1px solid var(--border);border-radius:6px"/>
+        <button type="button" data-action="remove-product" data-idx="${idx}" style="padding:4px 8px;background:#f5f5f5;border:none;border-radius:6px;cursor:pointer;font-size:12px">X</button>
+      </div>`;
+    })
+    .join("");
+
   return `
   <div class="modal-backdrop" data-action="backdrop">
     <div class="modal" data-stop>
@@ -1232,10 +1266,13 @@ function renderEntryModal(p) {
         </div>
       </div>
       <div class="field"><span>제품 (영양 계산용, 선택)</span>
-        <select id="f_product"><option value="">선택 안 함</option>${productOptions}</select>
+        <div style="display:flex;gap:8px">
+          <select id="f_product" style="flex:1"><option value="">제품 선택</option>${productOptions}</select>
+          <button type="button" data-action="add-product" style="padding:8px 12px;background:var(--primary);color:#fff;border:none;border-radius:10px;font-weight:600;font-size:13px">추가</button>
+        </div>
+        ${productsListHtml ? `<div style="margin-top:10px;padding-top:10px;border-top:1px solid var(--border)">${productsListHtml}</div>` : ""}
       </div>
       <div class="field-row">
-        <div class="field"><span>제공량 (g)</span><input type="number" inputmode="decimal" id="f_amount" value="${p.amountG || ""}" placeholder="0"/></div>
         <div class="field"><span>추가로 섞은 물 (ml)</span><input type="number" inputmode="decimal" id="f_water" value="${p.waterMl || ""}" placeholder="0"/></div>
       </div>
       <div class="field" id="f_food_status_wrap" style="${isFood ? "" : "display:none"}">
@@ -1593,6 +1630,25 @@ function bindGlobalEvents() {
   if (root._delegatedBound) return;
   root._delegatedBound = true;
 
+  // multi-product selection in entry form
+  root.addEventListener("click", (e) => {
+    if (e.target.closest('[data-action="add-product"]')) {
+      const dropdown = document.getElementById("f_product");
+      if (!dropdown || !dropdown.value) return;
+      const newProd = { id: dropdown.value, amountG: "" };
+      state.entryFormProducts.push(newProd);
+      dropdown.value = "";
+      render();
+      return;
+    }
+    if (e.target.closest('[data-action="remove-product"]')) {
+      const idx = parseInt(e.target.closest('[data-action="remove-product"]').getAttribute("data-idx"), 10);
+      state.entryFormProducts.splice(idx, 1);
+      render();
+      return;
+    }
+  });
+
   // category / food-status pill selection (event delegation, since re-render happens only on submit)
   root.addEventListener("click", (e) => {
     const dayBtn = e.target.closest("[data-day]");
@@ -1625,9 +1681,16 @@ function bindGlobalEvents() {
     }
   });
 
-  // live nutrition hint in entry form
+  // live nutrition hint in entry form + product amount updates
   root.addEventListener("input", (e) => {
     if (["f_product", "f_amount", "f_water", "f_leftover", "f_leftover_water"].includes(e.target.id)) updateEntryHint();
+    if (e.target.hasAttribute("data-product-idx")) {
+      const idx = parseInt(e.target.getAttribute("data-product-idx"), 10);
+      if (state.entryFormProducts[idx]) {
+        state.entryFormProducts[idx].amountG = e.target.value;
+        updateEntryHint();
+      }
+    }
   });
   root.addEventListener("change", (e) => {
     if (e.target.id === "f_product") updateEntryHint();
@@ -1676,6 +1739,13 @@ function updateEntryHint() {
 }
 
 function openEntryModal(payload) {
+  // 기존 productId 형식을 새 products 배열 형식으로 변환
+  if (payload.productId && !payload.products) {
+    payload.products = [{ id: payload.productId, amountG: payload.amountG }];
+  } else if (!payload.products) {
+    payload.products = [];
+  }
+  state.entryFormProducts = JSON.parse(JSON.stringify(payload.products)); // deep copy
   openModal("entry", payload);
   setTimeout(updateEntryHint, 0);
 }
@@ -1688,6 +1758,7 @@ function closeModal() {
   state.diaryMediaDraft = [];
   state.vetMediaDraft.forEach((m) => URL.revokeObjectURL(m.url));
   state.vetMediaDraft = [];
+  state.entryFormProducts = [];
   state.modal = null;
   render();
   if (state.tab === "diary") mountDiaryMedia();
@@ -1699,16 +1770,30 @@ function saveEntryFromForm(id, fromSchedule) {
   if (!label) return;
   const time = readTimeValue("f_time");
   const category = document.querySelector("#f_category_row .pillbtn.active")?.getAttribute("data-cat") || "food";
-  const productId = document.getElementById("f_product").value || null;
-  const amountG = document.getElementById("f_amount").value;
   const waterMl = document.getElementById("f_water").value;
   const note = document.getElementById("f_note").value.trim();
   const foodStatus = category === "food" ? document.querySelector("#f_foodstatus_row .pillbtn.active")?.getAttribute("data-status") || "all" : undefined;
   const leftoverG = category === "food" && foodStatus === "partial" ? document.getElementById("f_leftover").value : undefined;
   const leftoverWaterMl = category === "food" && foodStatus === "partial" ? document.getElementById("f_leftover_water").value : undefined;
 
+  // 여러 제품의 총 제공량 계산 (기록 시 참조용)
+  const totalAmountG = state.entryFormProducts.reduce((sum, p) => sum + num(p.amountG), 0);
+
   const entries = getEntries(state.date);
-  const entry = { id: id || uid(), time, label, category, productId, amountG, waterMl, note, foodStatus, leftoverG, leftoverWaterMl, fromSchedule: fromSchedule || undefined };
+  const entry = {
+    id: id || uid(),
+    time,
+    label,
+    category,
+    products: state.entryFormProducts,  // 새 형식: 여러 제품
+    amountG: totalAmountG.toString(),   // 참조용 총액
+    waterMl,
+    note,
+    foodStatus,
+    leftoverG,
+    leftoverWaterMl,
+    fromSchedule: fromSchedule || undefined,
+  };
   const idx = entries.findIndex((e) => e.id === entry.id);
   if (idx >= 0) entries[idx] = entry;
   else entries.push(entry);
