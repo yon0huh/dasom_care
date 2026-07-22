@@ -617,9 +617,9 @@ const state = {
   targets: LS.get("dasom_targets", { water: "", protein: "", kcal: "", food: "" }),
   modal: null, // {type:'entry'|'product'|'schedule'|'diary'|'vetnote', payload:{...}}
   diaryMediaDraft: [], // [{tmpId, blob, url, type}]
-  entryFormProducts: [], // [{id, amountG}] for multi-product selection in entry modal
   vetNotes: LS.get("dasom_vetnotes", []),
   vetMediaDraft: [],
+  entryItemsDraft: [{ productId: "", amountG: "" }], // 기록 추가/수정 폼에서 편집 중인 제품 목록
   showTargetEdit: false,
   historyView: "day", // 'day' | 'week' | 'month'
   scheduleCollapsed: LS.get("dasom_schedule_collapsed", false),
@@ -650,16 +650,34 @@ function eatenAmount(e) {
   if (e.foodStatus === "partial") return Math.max(0, offered - num(e.leftoverG));
   return offered; // 'all' 이거나 상태 미지정(기존 기록)인 경우 전량 섭취로 간주
 }
+/* 기록 하나에 여러 제품을 섞어 줄 수 있도록 items 배열 사용.
+   과거에 저장된 기록(productId/amountG 단일 필드)은 items 배열로 자동 변환해서 읽음. */
+function getEntryItems(e) {
+  if (Array.isArray(e.items) && e.items.length) return e.items;
+  if (e.productId || e.amountG) return [{ productId: e.productId || null, amountG: e.amountG || "" }];
+  return [];
+}
 function calcEntry(e, products) {
-  const p = e.productId ? products.find((pp) => pp.id === e.productId) : null;
-  const offered = num(e.amountG);
-  const eaten = eatenAmount(e);
+  const items = getEntryItems(e);
+  const offered = items.reduce((s, it) => s + num(it.amountG), 0);
+  const eaten = eatenAmount({ category: e.category, amountG: offered, foodStatus: e.foodStatus, leftoverG: e.leftoverG });
+  const ratio = offered > 0 ? eaten / offered : 0;
   const extraWater = eaten > 0 || e.category !== "food" ? num(e.waterMl) : 0;
   const leftoverWater = e.category === "food" && e.foodStatus === "partial" ? num(e.leftoverWaterMl) : 0;
-  const protein = p ? (eaten * num(p.proteinPct)) / 100 : 0;
-  const fat = p ? (eaten * num(p.fatPct)) / 100 : 0;
-  const kcal = p ? (eaten * num(p.kcalPer100g)) / 100 : 0;
-  const moisture = p ? (eaten * num(p.waterPct)) / 100 : 0;
+  let protein = 0,
+    fat = 0,
+    kcal = 0,
+    moisture = 0;
+  items.forEach((it) => {
+    const p = it.productId ? products.find((pp) => pp.id === it.productId) : null;
+    if (!p) return;
+    const itemOffered = num(it.amountG);
+    const itemEaten = e.category === "food" ? itemOffered * ratio : itemOffered;
+    protein += (itemEaten * num(p.proteinPct)) / 100;
+    fat += (itemEaten * num(p.fatPct)) / 100;
+    kcal += (itemEaten * num(p.kcalPer100g)) / 100;
+    moisture += (itemEaten * num(p.waterPct)) / 100;
+  });
   return { protein, fat, kcal, moisture, totalWater: Math.max(0, moisture + extraWater - leftoverWater), eaten, offered };
 }
 function daySummary(entries, products) {
@@ -792,20 +810,28 @@ function renderToday() {
         .map((e) => {
           const meta = catMeta(e.category);
           const c = calcEntry(e, state.products);
-          const p = e.productId ? state.products.find((pp) => pp.id === e.productId) : null;
+          const items = getEntryItems(e);
+          const productLabel = items
+            .map((it) => {
+              const pp = it.productId ? state.products.find((x) => x.id === it.productId) : null;
+              const amt = num(it.amountG) ? `${num(it.amountG)}g` : "";
+              return pp ? `${esc(pp.name)}${amt ? " " + amt : ""}` : amt;
+            })
+            .filter(Boolean)
+            .join(" + ");
           const foodParts = [];
-          if (e.category === "food" && e.amountG) {
-            if (e.foodStatus === "none") foodParts.push(`제공 ${e.amountG}g · 안 먹음`);
+          if (e.category === "food" && c.offered) {
+            if (e.foodStatus === "none") foodParts.push(`제공 ${c.offered}g · 안 먹음`);
             else if (e.foodStatus === "partial") {
               const pct = c.offered > 0 ? Math.round((c.eaten / c.offered) * 100) : 0;
               const offeredWater = e.waterMl ? `+물${e.waterMl}ml` : "";
               const leftoverFood = num(e.leftoverG);
               const leftoverWater = num(e.leftoverWaterMl) > 0 ? `+물${num(e.leftoverWaterMl)}ml` : "";
               const leftoverStr = `${leftoverFood}g${leftoverWater}`;
-              foodParts.push(`제공 ${e.amountG}g${offeredWater} · 남김 ${leftoverStr} · 섭취 ${c.eaten}g (${pct}%)`);
-            } else foodParts.push(`제공 ${e.amountG}g${e.waterMl ? '+물' + e.waterMl + 'ml' : ""} · 다 먹음`);
-          } else if (e.amountG) {
-            foodParts.push(`${e.amountG}g`);
+              foodParts.push(`제공 ${c.offered}g${offeredWater} · 남김 ${leftoverStr} · 섭취 ${c.eaten}g (${pct}%)`);
+            } else foodParts.push(`제공 ${c.offered}g${e.waterMl ? '+물' + e.waterMl + 'ml' : ""} · 다 먹음`);
+          } else if (c.offered) {
+            foodParts.push(`${c.offered}g`);
           }
           const detail = [
             ...foodParts,
@@ -821,7 +847,7 @@ function renderToday() {
         <div class="item ${skipped ? "food-skip" : ""} ${partial ? "food-partial" : ""}">
           <div class="badge" style="background:color-mix(in srgb, ${meta.color} 18%, transparent); color:${meta.color}">${icon(meta.icon, 16)}</div>
           <div class="main">
-            <div class="t1">${e.time} · ${esc(e.label)}${p ? " · " + esc(p.name) : ""}</div>
+            <div class="t1">${e.time} · ${esc(e.label)}${productLabel ? " · " + productLabel : ""}</div>
             <div class="t2">${esc(detail)}</div>
           </div>
           <div class="acts">
@@ -999,21 +1025,13 @@ async function mountDiaryMedia() {
     if (!d.mediaIds || !d.mediaIds.length) continue;
     const html = [];
     for (const id of d.mediaIds) {
-      try {
-        const rec = await getMediaRecord(id);
-        if (!rec) {
-          html.push(`<div class="m" style="background:#ddd;display:flex;align-items:center;justify-content:center"><span style="font-size:11px;color:#666">사진 로드 실패</span></div>`);
-          continue;
-        }
-        const url = URL.createObjectURL(rec.blob);
-        if (rec.type === "video") {
-          html.push(`<a href="${url}" target="_blank" style="text-decoration:none"><div class="m"><video src="${url}" muted playsinline preload="metadata"></video><span class="vic">${icon("play", 11)}</span></div></a>`);
-        } else {
-          html.push(`<a href="${url}" target="_blank" style="text-decoration:none"><div class="m"><img src="${url}" style="cursor:pointer"/></div></a>`);
-        }
-      } catch (err) {
-        console.error("media mount error", err);
-        html.push(`<div class="m" style="background:#ddd;display:flex;align-items:center;justify-content:center"><span style="font-size:11px;color:#666">오류</span></div>`);
+      const rec = await getMediaRecord(id);
+      if (!rec) continue;
+      const url = URL.createObjectURL(rec.blob);
+      if (rec.type === "video") {
+        html.push(`<div class="m" data-action="view-media" data-url="${url}" data-media-type="video"><video src="${url}" muted playsinline preload="metadata"></video><span class="vic">${icon("play", 11)}</span></div>`);
+      } else {
+        html.push(`<div class="m" data-action="view-media" data-url="${url}" data-media-type="image"><img src="${url}"/></div>`);
       }
     }
     el.innerHTML = html.join("");
@@ -1069,21 +1087,13 @@ async function mountVetMedia() {
     if (!n || !n.mediaIds || !n.mediaIds.length) continue;
     const html = [];
     for (const mid of n.mediaIds) {
-      try {
-        const rec = await getMediaRecord(mid);
-        if (!rec) {
-          html.push(`<div class="m" style="background:#ddd;display:flex;align-items:center;justify-content:center"><span style="font-size:11px;color:#666">사진 로드 실패</span></div>`);
-          continue;
-        }
-        const url = URL.createObjectURL(rec.blob);
-        if (rec.type === "video") {
-          html.push(`<a href="${url}" target="_blank" style="text-decoration:none"><div class="m"><video src="${url}" muted playsinline preload="metadata"></video><span class="vic">${icon("play", 11)}</span></div></a>`);
-        } else {
-          html.push(`<a href="${url}" target="_blank" style="text-decoration:none"><div class="m"><img src="${url}" style="cursor:pointer"/></div></a>`);
-        }
-      } catch (err) {
-        console.error("vet media mount error", err);
-        html.push(`<div class="m" style="background:#ddd;display:flex;align-items:center;justify-content:center"><span style="font-size:11px;color:#666">오류</span></div>`);
+      const rec = await getMediaRecord(mid);
+      if (!rec) continue;
+      const url = URL.createObjectURL(rec.blob);
+      if (rec.type === "video") {
+        html.push(`<div class="m" data-action="view-media" data-url="${url}" data-media-type="video"><video src="${url}" muted playsinline preload="metadata"></video><span class="vic">${icon("play", 11)}</span></div>`);
+      } else {
+        html.push(`<div class="m" data-action="view-media" data-url="${url}" data-media-type="image"><img src="${url}"/></div>`);
       }
     }
     el.innerHTML = html.join("");
@@ -1225,33 +1235,50 @@ function renderModal() {
   if (m.type === "diary") return renderDiaryModal(m.payload);
   if (m.type === "vetnote") return renderVetNoteModal(m.payload);
   if (m.type === "sync") return renderSyncModal();
+  if (m.type === "lightbox") return renderLightboxModal(m.payload);
   return "";
+}
+
+function renderLightboxModal(p) {
+  return `
+  <div class="lightbox-backdrop" data-action="backdrop">
+    <button class="lightbox-close" data-action="close-modal">${icon("x", 22)}</button>
+    <div class="lightbox-inner">
+      ${p.type === "video" ? `<video src="${p.url}" controls autoplay playsinline></video>` : `<img src="${p.url}"/>`}
+    </div>
+  </div>`;
+}
+
+function renderEntryItemsRows() {
+  const rowHtml = state.entryItemsDraft
+    .map((it, idx) => {
+      const options = state.products.map((pp) => `<option value="${pp.id}" ${it.productId === pp.id ? "selected" : ""}>${esc(pp.name)}</option>`).join("");
+      const canRemove = state.entryItemsDraft.length > 1;
+      return `
+      <div class="item-row">
+        <select class="f_item_product" data-idx="${idx}"><option value="">선택 안 함</option>${options}</select>
+        <input type="number" inputmode="decimal" class="f_item_amount" data-idx="${idx}" value="${it.amountG || ""}" placeholder="g"/>
+        <button type="button" class="item-row-rm" data-action="rm-entry-item" data-idx="${idx}" ${canRemove ? "" : "style=\"visibility:hidden\""}>${icon("x", 14)}</button>
+      </div>`;
+    })
+    .join("");
+  return `<div id="f_items">${rowHtml}</div>`;
+}
+function readItemRowsFromDOM() {
+  const rows = Array.from(document.querySelectorAll("#f_items .item-row"));
+  return rows.map((row) => ({
+    productId: row.querySelector(".f_item_product")?.value || "",
+    amountG: row.querySelector(".f_item_amount")?.value || "",
+  }));
 }
 
 function renderEntryModal(p) {
   const isEdit = !!p.id;
-  const productOptions = state.products.map((pp) => `<option value="${pp.id}">${esc(pp.name)}</option>`).join("");
   const isFood = (p.category || "food") === "food";
   const status = p.foodStatus || "all";
-  
-  // 총 제공량 계산 (여러 제품의 합)
-  const totalAmount = state.entryFormProducts.reduce((sum, prod) => sum + num(prod.amountG), 0);
-  const eatenNow = isFood ? eatenAmount({ category: "food", amountG: totalAmount, foodStatus: status, leftoverG: p.leftoverG }) : 0;
+  const totalOffered = state.entryItemsDraft.reduce((s, it) => s + num(it.amountG), 0);
+  const eatenNow = isFood ? eatenAmount({ category: "food", amountG: totalOffered, foodStatus: status, leftoverG: p.leftoverG }) : 0;
   const eatenWaterNow = isFood ? Math.max(0, num(p.waterMl) - num(p.leftoverWaterMl)) : 0;
-  
-  // 추가된 제품 목록 HTML
-  const productsListHtml = state.entryFormProducts
-    .map((prod, idx) => {
-      const prodData = state.products.find((pp) => pp.id === prod.id);
-      const prodName = prodData ? prodData.name : "(알 수 없음)";
-      return `<div style="display:flex;gap:8px;align-items:center;background:var(--surface-alt);padding:8px;border-radius:10px;margin-bottom:6px">
-        <span style="flex:1;font-size:13px">${esc(prodName)}</span>
-        <input type="number" inputmode="decimal" data-product-idx="${idx}" value="${prod.amountG || ""}" placeholder="g" style="width:50px;padding:4px;font-size:12px;border:1px solid var(--border);border-radius:6px"/>
-        <button type="button" data-action="remove-product" data-idx="${idx}" style="padding:4px 8px;background:#f5f5f5;border:none;border-radius:6px;cursor:pointer;font-size:12px">X</button>
-      </div>`;
-    })
-    .join("");
-
   return `
   <div class="modal-backdrop" data-action="backdrop">
     <div class="modal" data-stop>
@@ -1265,16 +1292,12 @@ function renderEntryModal(p) {
           ${CATEGORIES.map((c) => `<button type="button" class="pillbtn ${p.category === c.id ? "active" : ""}" data-cat="${c.id}">${c.label}</button>`).join("")}
         </div>
       </div>
-      <div class="field"><span>제품 (영양 계산용, 선택)</span>
-        <div style="display:flex;gap:8px">
-          <select id="f_product" style="flex:1"><option value="">제품 선택</option>${productOptions}</select>
-          <button type="button" data-action="add-product" style="padding:8px 12px;background:var(--primary);color:#fff;border:none;border-radius:10px;font-weight:600;font-size:13px">추가</button>
-        </div>
-        ${productsListHtml ? `<div style="margin-top:10px;padding-top:10px;border-top:1px solid var(--border)">${productsListHtml}</div>` : ""}
+      <div class="field">
+        <span>제품 (영양 계산용, 선택 — 여러 제품을 섞었으면 추가해주세요)</span>
+        ${renderEntryItemsRows()}
+        <button type="button" class="linkbtn add-item-btn" data-action="add-entry-item">${icon("plus", 14)} 제품 추가</button>
       </div>
-      <div class="field-row">
-        <div class="field"><span>추가로 섞은 물 (ml)</span><input type="number" inputmode="decimal" id="f_water" value="${p.waterMl || ""}" placeholder="0"/></div>
-      </div>
+      <div class="field"><span>추가로 섞은 물 (ml)</span><input type="number" inputmode="decimal" id="f_water" value="${p.waterMl || ""}" placeholder="0"/></div>
       <div class="field" id="f_food_status_wrap" style="${isFood ? "" : "display:none"}">
         <span>먹은 정도</span>
         <div class="pillrow statusrow" id="f_foodstatus_row">
@@ -1442,6 +1465,10 @@ function bindGlobalEvents() {
       render();
       return;
     }
+    if (action === "view-media") {
+      openLightbox(t.getAttribute("data-url"), t.getAttribute("data-media-type"));
+      return;
+    }
     if (action === "backdrop" && e.target === t) {
       closeModal();
       return;
@@ -1496,6 +1523,23 @@ function bindGlobalEvents() {
     }
     if (action === "save-entry") {
       saveEntryFromForm(t.getAttribute("data-id"), t.getAttribute("data-from-schedule"));
+      return;
+    }
+    if (action === "add-entry-item") {
+      state.entryItemsDraft = readItemRowsFromDOM();
+      state.entryItemsDraft.push({ productId: "", amountG: "" });
+      const container = document.getElementById("f_items");
+      if (container) container.outerHTML = renderEntryItemsRows();
+      updateEntryHint();
+      return;
+    }
+    if (action === "rm-entry-item") {
+      const idx = parseInt(t.getAttribute("data-idx"), 10);
+      state.entryItemsDraft = readItemRowsFromDOM();
+      if (state.entryItemsDraft.length > 1) state.entryItemsDraft.splice(idx, 1);
+      const container = document.getElementById("f_items");
+      if (container) container.outerHTML = renderEntryItemsRows();
+      updateEntryHint();
       return;
     }
     if (action === "open-product-form") {
@@ -1630,25 +1674,6 @@ function bindGlobalEvents() {
   if (root._delegatedBound) return;
   root._delegatedBound = true;
 
-  // multi-product selection in entry form
-  root.addEventListener("click", (e) => {
-    if (e.target.closest('[data-action="add-product"]')) {
-      const dropdown = document.getElementById("f_product");
-      if (!dropdown || !dropdown.value) return;
-      const newProd = { id: dropdown.value, amountG: "" };
-      state.entryFormProducts.push(newProd);
-      dropdown.value = "";
-      render();
-      return;
-    }
-    if (e.target.closest('[data-action="remove-product"]')) {
-      const idx = parseInt(e.target.closest('[data-action="remove-product"]').getAttribute("data-idx"), 10);
-      state.entryFormProducts.splice(idx, 1);
-      render();
-      return;
-    }
-  });
-
   // category / food-status pill selection (event delegation, since re-render happens only on submit)
   root.addEventListener("click", (e) => {
     const dayBtn = e.target.closest("[data-day]");
@@ -1681,19 +1706,19 @@ function bindGlobalEvents() {
     }
   });
 
-  // live nutrition hint in entry form + product amount updates
+  // live nutrition hint in entry form
   root.addEventListener("input", (e) => {
-    if (["f_product", "f_amount", "f_water", "f_leftover", "f_leftover_water"].includes(e.target.id)) updateEntryHint();
-    if (e.target.hasAttribute("data-product-idx")) {
-      const idx = parseInt(e.target.getAttribute("data-product-idx"), 10);
-      if (state.entryFormProducts[idx]) {
-        state.entryFormProducts[idx].amountG = e.target.value;
-        updateEntryHint();
-      }
+    if (e.target.classList && e.target.classList.contains("f_item_amount")) {
+      updateEntryHint();
+      return;
     }
+    if (["f_water", "f_leftover", "f_leftover_water"].includes(e.target.id)) updateEntryHint();
   });
   root.addEventListener("change", (e) => {
-    if (e.target.id === "f_product") updateEntryHint();
+    if (e.target.classList && e.target.classList.contains("f_item_product")) {
+      updateEntryHint();
+      return;
+    }
     if (e.target.id === "d_files") handleDiaryFiles(e.target.files);
     if (e.target.id === "v_files") handleVetFiles(e.target.files);
     if (["tgWater", "tgProtein", "tgKcal", "tgFood"].includes(e.target.id)) {
@@ -1711,7 +1736,8 @@ function bindGlobalEvents() {
 
 function updateEntryHint() {
   const isFoodCat = document.querySelector("#f_category_row .pillbtn.active")?.getAttribute("data-cat") === "food";
-  const offered = num(document.getElementById("f_amount")?.value);
+  const items = readItemRowsFromDOM();
+  const offered = items.reduce((s, it) => s + num(it.amountG), 0);
   const status = document.querySelector("#f_foodstatus_row .pillbtn.active")?.getAttribute("data-status") || "all";
   const leftover = num(document.getElementById("f_leftover")?.value);
   const eaten = isFoodCat ? eatenAmount({ category: "food", amountG: offered, foodStatus: status, leftoverG: leftover }) : offered;
@@ -1727,25 +1753,32 @@ function updateEntryHint() {
 
   const hint = document.getElementById("f_calc_hint");
   if (!hint) return;
-  const pid = document.getElementById("f_product").value;
-  const p = state.products.find((pp) => pp.id === pid);
-  if (!p || !eaten) {
+  if (!eaten || !items.length) {
     hint.innerHTML = "";
     return;
   }
-  const protein = (eaten * num(p.proteinPct)) / 100;
-  const moisture = Math.max(0, (eaten * num(p.waterPct)) / 100 + water - leftoverWater);
+  const ratio = offered > 0 ? eaten / offered : 0;
+  let protein = 0,
+    moisture = 0;
+  items.forEach((it) => {
+    const pp = it.productId ? state.products.find((x) => x.id === it.productId) : null;
+    if (!pp) return;
+    const itemOffered = num(it.amountG);
+    const itemEaten = isFoodCat ? itemOffered * ratio : itemOffered;
+    protein += (itemEaten * num(pp.proteinPct)) / 100;
+    moisture += (itemEaten * num(pp.waterPct)) / 100;
+  });
+  moisture = Math.max(0, moisture + water - leftoverWater);
+  if (protein <= 0 && moisture <= 0) {
+    hint.innerHTML = "";
+    return;
+  }
   hint.innerHTML = `<div class="hint">예상 섭취: 단백질 ${protein.toFixed(1)}g · 수분 ${moisture.toFixed(0)}ml</div>`;
 }
 
 function openEntryModal(payload) {
-  // 기존 productId 형식을 새 products 배열 형식으로 변환
-  if (payload.productId && !payload.products) {
-    payload.products = [{ id: payload.productId, amountG: payload.amountG }];
-  } else if (!payload.products) {
-    payload.products = [];
-  }
-  state.entryFormProducts = JSON.parse(JSON.stringify(payload.products)); // deep copy
+  const items = getEntryItems(payload);
+  state.entryItemsDraft = items.length ? items.map((it) => ({ productId: it.productId || "", amountG: it.amountG || "" })) : [{ productId: "", amountG: "" }];
   openModal("entry", payload);
   setTimeout(updateEntryHint, 0);
 }
@@ -1753,12 +1786,15 @@ function openModal(type, payload) {
   state.modal = { type, payload };
   render();
 }
+function openLightbox(url, type) {
+  if (!url) return;
+  openModal("lightbox", { url, type });
+}
 function closeModal() {
   state.diaryMediaDraft.forEach((m) => URL.revokeObjectURL(m.url));
   state.diaryMediaDraft = [];
   state.vetMediaDraft.forEach((m) => URL.revokeObjectURL(m.url));
   state.vetMediaDraft = [];
-  state.entryFormProducts = [];
   state.modal = null;
   render();
   if (state.tab === "diary") mountDiaryMedia();
@@ -1770,30 +1806,17 @@ function saveEntryFromForm(id, fromSchedule) {
   if (!label) return;
   const time = readTimeValue("f_time");
   const category = document.querySelector("#f_category_row .pillbtn.active")?.getAttribute("data-cat") || "food";
+  const items = readItemRowsFromDOM()
+    .map((it) => ({ productId: it.productId || null, amountG: it.amountG || "" }))
+    .filter((it) => it.productId || num(it.amountG) > 0);
   const waterMl = document.getElementById("f_water").value;
   const note = document.getElementById("f_note").value.trim();
   const foodStatus = category === "food" ? document.querySelector("#f_foodstatus_row .pillbtn.active")?.getAttribute("data-status") || "all" : undefined;
   const leftoverG = category === "food" && foodStatus === "partial" ? document.getElementById("f_leftover").value : undefined;
   const leftoverWaterMl = category === "food" && foodStatus === "partial" ? document.getElementById("f_leftover_water").value : undefined;
 
-  // 여러 제품의 총 제공량 계산 (기록 시 참조용)
-  const totalAmountG = state.entryFormProducts.reduce((sum, p) => sum + num(p.amountG), 0);
-
   const entries = getEntries(state.date);
-  const entry = {
-    id: id || uid(),
-    time,
-    label,
-    category,
-    products: state.entryFormProducts,  // 새 형식: 여러 제품
-    amountG: totalAmountG.toString(),   // 참조용 총액
-    waterMl,
-    note,
-    foodStatus,
-    leftoverG,
-    leftoverWaterMl,
-    fromSchedule: fromSchedule || undefined,
-  };
+  const entry = { id: id || uid(), time, label, category, items, waterMl, note, foodStatus, leftoverG, leftoverWaterMl, fromSchedule: fromSchedule || undefined };
   const idx = entries.findIndex((e) => e.id === entry.id);
   if (idx >= 0) entries[idx] = entry;
   else entries.push(entry);
