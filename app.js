@@ -652,11 +652,12 @@ function calcEntry(e, products) {
   const offered = num(e.amountG);
   const eaten = eatenAmount(e);
   const extraWater = eaten > 0 || e.category !== "food" ? num(e.waterMl) : 0;
+  const leftoverWater = e.category === "food" && e.foodStatus === "partial" ? num(e.leftoverWaterMl) : 0;
   const protein = p ? (eaten * num(p.proteinPct)) / 100 : 0;
   const fat = p ? (eaten * num(p.fatPct)) / 100 : 0;
   const kcal = p ? (eaten * num(p.kcalPer100g)) / 100 : 0;
   const moisture = p ? (eaten * num(p.waterPct)) / 100 : 0;
-  return { protein, fat, kcal, moisture, totalWater: moisture + extraWater, eaten, offered };
+  return { protein, fat, kcal, moisture, totalWater: Math.max(0, moisture + extraWater - leftoverWater), eaten, offered };
 }
 function daySummary(entries, products) {
   return entries.reduce(
@@ -794,8 +795,12 @@ function renderToday() {
             if (e.foodStatus === "none") foodParts.push(`제공 ${e.amountG}g · 안 먹음`);
             else if (e.foodStatus === "partial") {
               const pct = c.offered > 0 ? Math.round((c.eaten / c.offered) * 100) : 0;
-              foodParts.push(`제공 ${e.amountG}g · 남김 ${num(e.leftoverG)}g · 섭취 ${c.eaten}g (${pct}%)`);
-            } else foodParts.push(`제공 ${e.amountG}g · 다 먹음`);
+              const offeredWater = e.waterMl ? `+물${e.waterMl}ml` : "";
+              const leftoverFood = num(e.leftoverG);
+              const leftoverWater = num(e.leftoverWaterMl) > 0 ? `+물${num(e.leftoverWaterMl)}ml` : "";
+              const leftoverStr = `${leftoverFood}g${leftoverWater}`;
+              foodParts.push(`제공 ${e.amountG}g${offeredWater} · 남김 ${leftoverStr} · 섭취 ${c.eaten}g (${pct}%)`);
+            } else foodParts.push(`제공 ${e.amountG}g${e.waterMl ? '+물' + e.waterMl + 'ml' : ""} · 다 먹음`);
           } else if (e.amountG) {
             foodParts.push(`${e.amountG}g`);
           }
@@ -1234,9 +1239,12 @@ function renderEntryModal(p) {
           <button type="button" class="pillbtn status-none ${status === "none" ? "active" : ""}" data-status="none">안 먹음</button>
         </div>
       </div>
-      <div class="field-row" id="f_leftover_wrap" style="${isFood && status === "partial" ? "display:flex" : "display:none"}">
-        <div class="field"><span>남긴 양 (g)</span><input type="number" inputmode="decimal" id="f_leftover" value="${p.leftoverG || ""}" placeholder="0"/></div>
-        <div class="field"><span>섭취량</span><input type="text" id="f_eaten_display" value="${eatenNow}g" disabled/></div>
+      <div id="f_leftover_wrap" style="${isFood && status === "partial" ? "" : "display:none"}">
+        <div class="field-row">
+          <div class="field"><span>남긴 밥 (g)</span><input type="number" inputmode="decimal" id="f_leftover" value="${p.leftoverG || ""}" placeholder="0"/></div>
+          <div class="field"><span>남긴 물 (ml)</span><input type="number" inputmode="decimal" id="f_leftover_water" value="${p.leftoverWaterMl || ""}" placeholder="0"/></div>
+        </div>
+        <div class="field"><span>예상 섭취량</span><input type="text" id="f_eaten_display" value="${eatenNow}g" disabled/></div>
       </div>
       <div class="field"><span>메모</span><input id="f_note" value="${esc(p.note || "")}" placeholder="선택 사항"/></div>
       <div id="f_calc_hint"></div>
@@ -1603,7 +1611,7 @@ function bindGlobalEvents() {
 
   // live nutrition hint in entry form
   root.addEventListener("input", (e) => {
-    if (["f_product", "f_amount", "f_water", "f_leftover"].includes(e.target.id)) updateEntryHint();
+    if (["f_product", "f_amount", "f_water", "f_leftover", "f_leftover_water"].includes(e.target.id)) updateEntryHint();
   });
   root.addEventListener("change", (e) => {
     if (e.target.id === "f_product") updateEntryHint();
@@ -1636,13 +1644,14 @@ function updateEntryHint() {
   if (!hint) return;
   const pid = document.getElementById("f_product").value;
   const water = num(document.getElementById("f_water").value);
+  const leftoverWater = num(document.getElementById("f_leftover_water")?.value);
   const p = state.products.find((pp) => pp.id === pid);
   if (!p || !eaten) {
     hint.innerHTML = "";
     return;
   }
   const protein = (eaten * num(p.proteinPct)) / 100;
-  const moisture = (eaten * num(p.waterPct)) / 100 + water;
+  const moisture = Math.max(0, (eaten * num(p.waterPct)) / 100 + water - leftoverWater);
   hint.innerHTML = `<div class="hint">예상 섭취: 단백질 ${protein.toFixed(1)}g · 수분 ${moisture.toFixed(0)}ml</div>`;
 }
 
@@ -1676,9 +1685,10 @@ function saveEntryFromForm(id, fromSchedule) {
   const note = document.getElementById("f_note").value.trim();
   const foodStatus = category === "food" ? document.querySelector("#f_foodstatus_row .pillbtn.active")?.getAttribute("data-status") || "all" : undefined;
   const leftoverG = category === "food" && foodStatus === "partial" ? document.getElementById("f_leftover").value : undefined;
+  const leftoverWaterMl = category === "food" && foodStatus === "partial" ? document.getElementById("f_leftover_water").value : undefined;
 
   const entries = getEntries(state.date);
-  const entry = { id: id || uid(), time, label, category, productId, amountG, waterMl, note, foodStatus, leftoverG, fromSchedule: fromSchedule || undefined };
+  const entry = { id: id || uid(), time, label, category, productId, amountG, waterMl, note, foodStatus, leftoverG, leftoverWaterMl, fromSchedule: fromSchedule || undefined };
   const idx = entries.findIndex((e) => e.id === entry.id);
   if (idx >= 0) entries[idx] = entry;
   else entries.push(entry);
