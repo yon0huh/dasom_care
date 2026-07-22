@@ -212,13 +212,15 @@ function mediaStoragePath(id) {
   return `families/${Sync.code}/media/${id}`;
 }
 async function uploadMediaToCloud(id, mime, blob) {
-  if (!Sync.active || !Sync.code) return;
+  if (!Sync.active || !Sync.code) return false;
   const storage = syncInitStorage();
-  if (!storage) return;
+  if (!storage) return false;
   try {
     await storage.ref().child(mediaStoragePath(id)).put(blob, { contentType: mime });
+    return true;
   } catch (err) {
     console.error("사진/영상 업로드 실패", err);
+    return false;
   }
 }
 async function fetchMediaFromCloud(id) {
@@ -452,7 +454,7 @@ function compressImage(file, maxDim = 1080, quality = 0.72) {
 /* ---------- video compression ---------- */
 let _ffmpegInstance = null;
 let _ffmpegLoadPromise = null;
-const MAX_UNCOMPRESSED_VIDEO_BYTES = 12 * 1024 * 1024;
+const MAX_CACHED_VIDEO_BYTES = 8 * 1024 * 1024;
 
 function waitForVideo(video, event) {
   return new Promise((resolve, reject) => {
@@ -487,7 +489,7 @@ async function compressVideoInBrowser(file) {
   try {
     await waitForVideo(video, "loadedmetadata");
     const largestSide = Math.max(video.videoWidth, video.videoHeight);
-    const ratio = largestSide > 960 ? 960 / largestSide : 1;
+    const ratio = largestSide > 720 ? 720 / largestSide : 1;
     const width = Math.max(2, Math.round(video.videoWidth * ratio / 2) * 2);
     const height = Math.max(2, Math.round(video.videoHeight * ratio / 2) * 2);
     const canvas = document.createElement("canvas");
@@ -496,7 +498,7 @@ async function compressVideoInBrowser(file) {
     const ctx = canvas.getContext("2d", { alpha: false });
     const stream = canvas.captureStream(24);
     const chunks = [];
-    const recorder = new MediaRecorder(stream, { mimeType, videoBitsPerSecond: 1200000 });
+    const recorder = new MediaRecorder(stream, { mimeType, videoBitsPerSecond: 650000 });
     recorder.addEventListener("dataavailable", (e) => { if (e.data.size) chunks.push(e.data); });
     const completed = new Promise((resolve, reject) => {
       recorder.addEventListener("stop", () => resolve(new Blob(chunks, { type: recorder.mimeType || mimeType })), { once: true });
@@ -590,14 +592,17 @@ async function compressVideo(file) {
   try {
     const compressed = await compressVideoInBrowser(file);
     // Do not replace a small file with a larger re-encoded version.
-    if (compressed.size < file.size || file.size > MAX_UNCOMPRESSED_VIDEO_BYTES) return compressed;
-    return file;
+    const result = compressed.size < file.size ? compressed : file;
+    if (result.size > MAX_CACHED_VIDEO_BYTES) {
+      throw new Error("압축 후에도 영상이 8MB를 넘어요. 1분 이내의 짧은 영상으로 나눠서 저장해주세요.");
+    }
+    return result;
   } catch (browserError) {
     try {
       return await compressVideoWithFFmpeg(file);
     } catch (ffmpegError) {
-      if (file.size <= MAX_UNCOMPRESSED_VIDEO_BYTES) return file;
-      throw new Error("영상 압축에 실패했어요. 12MB 이하의 짧은 영상으로 다시 선택해주세요.");
+      if (file.size <= MAX_CACHED_VIDEO_BYTES) return file;
+      throw new Error("이 기기에서 영상 압축을 완료하지 못했어요. 8MB 이하의 짧은 영상으로 다시 선택해주세요.");
     }
   }
 }
@@ -1783,12 +1788,17 @@ async function saveDiaryFromForm(date) {
   const newIds = [];
   for (const m of state.diaryMediaDraft) {
     const id = uid();
+    const cloudSaved = await uploadMediaToCloud(id, m.blob.type, m.blob);
     try {
       await IDB.put({ id, date, type: m.type, mime: m.blob.type, blob: m.blob });
-      uploadMediaToCloud(id, m.blob.type, m.blob);
       newIds.push(id);
     } catch (err) {
-      alert("사진/영상 저장에 실패했어요. 용량이 너무 크지 않은지 확인해주세요.");
+      if (cloudSaved) {
+        // The cloud copy is enough: it will be fetched back when this screen opens.
+        newIds.push(id);
+      } else {
+        alert("사진/영상 저장에 실패했어요. 기기 저장공간을 확인하거나 가족 연결 후 다시 시도해주세요.");
+      }
     }
   }
   const mediaIds = [...(existing.mediaIds || []), ...newIds];
@@ -1821,12 +1831,17 @@ async function saveVetNoteFromForm(id) {
   const newIds = [];
   for (const m of state.vetMediaDraft) {
     const mid = uid();
+    const cloudSaved = await uploadMediaToCloud(mid, m.blob.type, m.blob);
     try {
       await IDB.put({ id: mid, date, type: m.type, mime: m.blob.type, blob: m.blob });
-      uploadMediaToCloud(mid, m.blob.type, m.blob);
       newIds.push(mid);
     } catch (err) {
-      alert("사진/영상 저장에 실패했어요. 용량이 너무 크지 않은지 확인해주세요.");
+      if (cloudSaved) {
+        // The cloud copy is enough: it will be fetched back when this screen opens.
+        newIds.push(mid);
+      } else {
+        alert("사진/영상 저장에 실패했어요. 기기 저장공간을 확인하거나 가족 연결 후 다시 시도해주세요.");
+      }
     }
   }
   const mediaIds = [...((existing && existing.mediaIds) || []), ...newIds];

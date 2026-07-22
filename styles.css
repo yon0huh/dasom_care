@@ -208,7 +208,7 @@ input,select,textarea{ font-family:inherit; }
 .field-row > .field{ flex:1; min-width:0; }
 .field-row > .field input,
 .field-row > .field select{ width:100%; min-width:0; box-sizing:border-box; }
-.field-time{ flex:0 0 118px; }
+.field-row > .field.field-time{ flex:0 0 132px; }
 .field-grow{ flex:1 1 auto; min-width:0; }
 input[type="time"]{ min-width:0; }
 .timepick{
@@ -220,10 +220,6 @@ input[type="time"]{ min-width:0; }
   font-size:16px; font-weight:700; padding:9px 4px !important;
 }
 .timepick .tp-colon{ font-weight:700; color:var(--muted); }
-.field-row .field:has(.timepick){ flex:0 1 150px; }
-@media (max-width:380px){
-  .field-row .field:has(.timepick){ flex-basis:132px; }
-}
 .hint{ font-size:12px; background:var(--primary-soft); color:var(--primary); border-radius:10px; padding:8px 10px; margin-bottom:12px; }
 .savebtn{
   width:100%; padding:13px; border-radius:14px; background:var(--primary); color:#fff;
