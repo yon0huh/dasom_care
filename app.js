@@ -168,13 +168,14 @@ const FIREBASE_CONFIG = {
   appId: "1:374773537114:web:a479f2317af6e26cd87b63",
   measurementId: "G-CJY48CH60K",
 };
+// 이 키만 동기화 대상에서 제외 (기기마다 다른 코드를 쓸 수 있어야 하므로)
 const SYNC_SKIP_KEY = "dasom_household_code";
 
 const Sync = {
   db: null,
   storage: null,
   docRef: null,
-  code: null,
+  code: null, // set later, after LS is fully defined below
   active: false,
   connected: false,
   applyingRemote: false,
@@ -194,7 +195,7 @@ function syncInitFirebase() {
   return Sync.db;
 }
 
-/* ---------- cloud media (Firebase Storage) ---------- */
+/* ---------- cloud media (Firebase Storage): 가족 코드로 연결된 기기끼리 사진/영상 공유 ---------- */
 function syncInitStorage() {
   if (Sync.storage) return Sync.storage;
   if (typeof firebase === "undefined") return null;
@@ -238,7 +239,9 @@ async function deleteMediaFromCloud(id) {
   if (!storage) return;
   try {
     await storage.ref().child(mediaStoragePath(id)).delete();
-  } catch (err) {}
+  } catch (err) {
+    // 이미 없거나 권한 문제면 조용히 넘어감
+  }
 }
 async function getMediaRecord(id) {
   try {
@@ -253,6 +256,7 @@ async function getMediaRecord(id) {
   return rec;
 }
 
+// 동기화 대상: 제품/일정/목표/특이사항 + 날짜별 식사기록/일지 텍스트 (사진·영상 실제 파일은 Firebase Storage로 별도 업로드/다운로드됨)
 function collectSyncableState() {
   const out = {};
   out.dasom_products = LS.get("dasom_products", []);
@@ -360,6 +364,7 @@ function syncDisconnect() {
 }
 Sync.code = LS.get(SYNC_SKIP_KEY, null);
 
+
 const IDB = {
   _db: null,
   open() {
@@ -447,6 +452,79 @@ function compressImage(file, maxDim = 1080, quality = 0.72) {
 /* ---------- video compression ---------- */
 let _ffmpegInstance = null;
 let _ffmpegLoadPromise = null;
+const MAX_UNCOMPRESSED_VIDEO_BYTES = 12 * 1024 * 1024;
+
+function waitForVideo(video, event) {
+  return new Promise((resolve, reject) => {
+    video.addEventListener(event, resolve, { once: true });
+    video.addEventListener("error", () => reject(new Error("영상 파일을 읽을 수 없어요.")), { once: true });
+  });
+}
+
+function preferredVideoMimeType() {
+  if (!window.MediaRecorder) return "";
+  return [
+    "video/mp4;codecs=avc1.42E01E",
+    "video/mp4",
+    "video/webm;codecs=vp8",
+    "video/webm",
+  ].find((type) => MediaRecorder.isTypeSupported(type)) || "";
+}
+
+// iOS Safari does not reliably run ffmpeg.wasm. Re-recording a scaled canvas works
+// there without downloading a large WebAssembly worker, and keeps uploads small.
+async function compressVideoInBrowser(file) {
+  const mimeType = preferredVideoMimeType();
+  if (!mimeType || !HTMLCanvasElement.prototype.captureStream) {
+    throw new Error("이 브라우저에서는 영상 압축을 지원하지 않아요.");
+  }
+  const sourceUrl = URL.createObjectURL(file);
+  const video = document.createElement("video");
+  video.src = sourceUrl;
+  video.muted = true;
+  video.playsInline = true;
+  video.preload = "metadata";
+  try {
+    await waitForVideo(video, "loadedmetadata");
+    const largestSide = Math.max(video.videoWidth, video.videoHeight);
+    const ratio = largestSide > 960 ? 960 / largestSide : 1;
+    const width = Math.max(2, Math.round(video.videoWidth * ratio / 2) * 2);
+    const height = Math.max(2, Math.round(video.videoHeight * ratio / 2) * 2);
+    const canvas = document.createElement("canvas");
+    canvas.width = width;
+    canvas.height = height;
+    const ctx = canvas.getContext("2d", { alpha: false });
+    const stream = canvas.captureStream(24);
+    const chunks = [];
+    const recorder = new MediaRecorder(stream, { mimeType, videoBitsPerSecond: 1200000 });
+    recorder.addEventListener("dataavailable", (e) => { if (e.data.size) chunks.push(e.data); });
+    const completed = new Promise((resolve, reject) => {
+      recorder.addEventListener("stop", () => resolve(new Blob(chunks, { type: recorder.mimeType || mimeType })), { once: true });
+      recorder.addEventListener("error", () => reject(new Error("영상 압축 중 오류가 발생했어요.")), { once: true });
+    });
+    recorder.start(1000);
+    await video.play();
+    await new Promise((resolve) => {
+      const draw = () => {
+        if (!video.paused && !video.ended) {
+          ctx.drawImage(video, 0, 0, width, height);
+          requestAnimationFrame(draw);
+        }
+      };
+      video.addEventListener("ended", resolve, { once: true });
+      draw();
+    });
+    recorder.stop();
+    const blob = await completed;
+    if (!blob.size) throw new Error("압축된 영상이 비어 있어요.");
+    return blob;
+  } finally {
+    URL.revokeObjectURL(sourceUrl);
+    video.removeAttribute("src");
+    video.load();
+  }
+}
+
 function loadFFmpegScript() {
   return new Promise((resolve, reject) => {
     if (window.FFmpeg) return resolve();
@@ -478,33 +556,22 @@ async function getFFmpegInstance() {
   }
   return _ffmpegLoadPromise;
 }
-async function compressVideo(file) {
+// 최대 960px 변, 24fps, CRF30로 재인코딩 — 화질은 유지하면서 용량을 크게 줄임. 실패하면 원본을 그대로 사용.
+async function compressVideoWithFFmpeg(file) {
   try {
     const ffmpeg = await getFFmpegInstance();
     const { fetchFile } = window.FFmpeg;
-    const ext = file.name && file.name.match(/\.\w+$/) ? file.name.match(/\.\w+$/)[0] : ".mp4";
+    const ext = (file.name && file.name.match(/\.\w+$/)) ? file.name.match(/\.\w+$/)[0] : ".mp4";
     const inputName = "in_" + uid() + ext;
     const outputName = "out_" + uid() + ".mp4";
     ffmpeg.FS("writeFile", inputName, await fetchFile(file));
     await ffmpeg.run(
-      "-i",
-      inputName,
-      "-vf",
-      "scale='min(960,iw)':'min(960,ih)':force_original_aspect_ratio=decrease",
-      "-r",
-      "24",
-      "-c:v",
-      "libx264",
-      "-preset",
-      "veryfast",
-      "-crf",
-      "30",
-      "-c:a",
-      "aac",
-      "-b:a",
-      "96k",
-      "-movflags",
-      "+faststart",
+      "-i", inputName,
+      "-vf", "scale='min(960,iw)':'min(960,ih)':force_original_aspect_ratio=decrease",
+      "-r", "24",
+      "-c:v", "libx264", "-preset", "veryfast", "-crf", "30",
+      "-c:a", "aac", "-b:a", "96k",
+      "-movflags", "+faststart",
       outputName
     );
     const data = ffmpeg.FS("readFile", outputName);
@@ -515,7 +582,23 @@ async function compressVideo(file) {
     return new Blob([data.buffer], { type: "video/mp4" });
   } catch (err) {
     console.error("영상 압축 실패, 원본 그대로 사용", err);
+    throw err;
+  }
+}
+
+async function compressVideo(file) {
+  try {
+    const compressed = await compressVideoInBrowser(file);
+    // Do not replace a small file with a larger re-encoded version.
+    if (compressed.size < file.size || file.size > MAX_UNCOMPRESSED_VIDEO_BYTES) return compressed;
     return file;
+  } catch (browserError) {
+    try {
+      return await compressVideoWithFFmpeg(file);
+    } catch (ffmpegError) {
+      if (file.size <= MAX_UNCOMPRESSED_VIDEO_BYTES) return file;
+      throw new Error("영상 압축에 실패했어요. 12MB 이하의 짧은 영상으로 다시 선택해주세요.");
+    }
   }
 }
 
@@ -526,12 +609,12 @@ const state = {
   products: LS.get("dasom_products", []),
   schedule: LS.get("dasom_schedule", null) || DEFAULT_SCHEDULE.map((s) => ({ ...s, _id: uid() })),
   targets: LS.get("dasom_targets", { water: "", protein: "", kcal: "", food: "" }),
-  modal: null,
-  diaryMediaDraft: [],
+  modal: null, // {type:'entry'|'product'|'schedule'|'diary'|'vetnote', payload:{...}}
+  diaryMediaDraft: [], // [{tmpId, blob, url, type}]
   vetNotes: LS.get("dasom_vetnotes", []),
   vetMediaDraft: [],
   showTargetEdit: false,
-  historyView: "day",
+  historyView: "day", // 'day' | 'week' | 'month'
 };
 if (!LS.get("dasom_schedule", null)) LS.set("dasom_schedule", state.schedule);
 
@@ -551,13 +634,13 @@ function saveVetNotes() {
   LS.set("dasom_vetnotes", state.vetNotes);
 }
 
-/* 먹은 양 계산 */
+/* 먹은 양 계산: 식사 기록은 '다 먹음/일부 남김/안 먹음' 상태에 따라 실제 섭취량을 계산 */
 function eatenAmount(e) {
   const offered = num(e.amountG);
   if (e.category !== "food") return offered;
   if (e.foodStatus === "none") return 0;
   if (e.foodStatus === "partial") return Math.max(0, offered - num(e.leftoverG));
-  return offered;
+  return offered; // 'all' 이거나 상태 미지정(기존 기록)인 경우 전량 섭취로 간주
 }
 function calcEntry(e, products) {
   const p = e.productId ? products.find((pp) => pp.id === e.productId) : null;
@@ -912,7 +995,7 @@ async function mountDiaryMedia() {
   }
 }
 
-/* ---------------- VET NOTES ---------------- */
+/* ---------------- VET NOTES (특이사항) ---------------- */
 function renderVetNoteItem(n) {
   return `
     <div class="vetnote ${n.resolved ? "resolved" : ""}">
@@ -1010,7 +1093,7 @@ function aggregateHistory(granularity) {
       start.setDate(d.getDate() - d.getDay());
       key = `${start.getFullYear()}-${String(start.getMonth() + 1).padStart(2, "0")}-${String(start.getDate()).padStart(2, "0")}`;
     } else {
-      key = date.slice(0, 7);
+      key = date.slice(0, 7); // YYYY-MM
     }
     if (!map.has(key)) map.set(key, []);
     map.get(key).push(date);
@@ -1239,7 +1322,7 @@ function renderVetNoteModal(p) {
       <div class="hint">변 상태, 컨디션 변화, 병원에 물어볼 점 등을 자유롭게 남겨주세요. 체크박스로 해결 여부를 표시할 수 있어요.</div>
       <div class="field-row">
         <div class="field"><span>날짜</span><input type="date" id="v_date" value="${p.date}"/></div>
-        <div class="field"><span>시간(선택)</span>${timeInputHtml("v_time", p.time || "")}</div>
+        <div class="field field-time"><span>시간(선택)</span>${timeInputHtml("v_time", p.time || "")}</div>
       </div>
       <div class="field"><span>내용</span><textarea id="v_text" placeholder="예: 변이 묽고 색이 진해요. 오늘 컨디션 처짐.">${esc(p.text || "")}</textarea></div>
       ${p.mediaIds && p.mediaIds.length ? `<p class="muted" style="font-size:11px;margin:-4px 0 10px">이미 첨부된 사진/영상 ${p.mediaIds.length}개가 있어요. 여기서는 새 사진만 추가돼요.</p>` : ""}
@@ -1476,9 +1559,12 @@ function bindGlobalEvents() {
     }
   };
 
+  // these are delegated on the persistent #app root, so only bind them once
+  // (otherwise they'd stack up on every render() call)
   if (root._delegatedBound) return;
   root._delegatedBound = true;
 
+  // category / food-status pill selection (event delegation, since re-render happens only on submit)
   root.addEventListener("click", (e) => {
     const dayBtn = e.target.closest("[data-day]");
     if (dayBtn) {
@@ -1510,6 +1596,7 @@ function bindGlobalEvents() {
     }
   });
 
+  // live nutrition hint in entry form
   root.addEventListener("input", (e) => {
     if (["f_product", "f_amount", "f_water", "f_leftover"].includes(e.target.id)) updateEntryHint();
   });
@@ -1648,13 +1735,23 @@ async function handleMediaFiles(fileList, getDraftArray, previewElId, renderPrev
         if (preview) preview.outerHTML = renderPreviewFn();
         compressVideo(file).then((compressedBlob) => {
           const item = getDraftArray().find((m) => m.tmpId === tmpId);
-          if (!item) return;
+          if (!item) return; // 압축 중 사용자가 삭제한 경우
           URL.revokeObjectURL(item.url);
           item.blob = compressedBlob;
           item.url = URL.createObjectURL(compressedBlob);
           item.pending = false;
           const el = document.getElementById(previewElId);
           if (el) el.outerHTML = renderPreviewFn();
+        }).catch((err) => {
+          const drafts = getDraftArray();
+          const index = drafts.findIndex((m) => m.tmpId === tmpId);
+          if (index >= 0) {
+            URL.revokeObjectURL(drafts[index].url);
+            drafts.splice(index, 1);
+          }
+          const el = document.getElementById(previewElId);
+          if (el) el.outerHTML = renderPreviewFn();
+          alert(err.message || "영상 압축에 실패했어요. 더 짧은 영상으로 다시 시도해주세요.");
         });
       } else if (file.type.startsWith("image/")) {
         const blob = await compressImage(file);
