@@ -16,7 +16,7 @@
   --purple:#8C7BB0;
 }
 *, *::before, *::after { box-sizing:border-box; }
-html,body{ margin:0; padding:0; }
+html,body{ margin:0; padding:0; overflow-x:hidden; }
 body{
   background:var(--bg);
   color:var(--text);
@@ -36,6 +36,7 @@ input,select,textarea{ font-family:inherit; }
   display:flex;
   flex-direction:column;
   padding-bottom:calc(76px + env(safe-area-inset-bottom));
+  overflow-x:hidden;
 }
 
 /* header */
@@ -190,6 +191,7 @@ input,select,textarea{ font-family:inherit; }
 .modal-backdrop{
   position:fixed; inset:0; background:rgba(43,38,34,.45);
   display:flex; align-items:flex-end; justify-content:center; z-index:50;
+  overflow-x:hidden;
 }
 .modal{
   width:100%; max-width:480px; max-height:88vh; overflow-y:auto; overflow-x:hidden;
@@ -200,56 +202,63 @@ input,select,textarea{ font-family:inherit; }
 .modal-head h3{ margin:0; font-size:17px; }
 .modal-head button{ color:var(--muted); }
 
-/* 입력 필드 레이아웃 개선 */
-.field{ display:flex; flex-direction:column; gap:5px; font-size:12.5px; color:var(--muted); margin-bottom:12px; min-width:0; }
+/* 필드 기본 설정 */
+.field{ display:flex; flex-direction:column; gap:5px; font-size:12.5px; color:var(--muted); margin-bottom:12px; width:100%; box-sizing:border-box; }
 .field input, .field select, .field textarea{
   background:var(--bg); border:1px solid var(--border); border-radius:12px;
-  padding:9px 11px; font-size:14px; color:var(--text); width:100%;
+  padding:9px 11px; font-size:14px; color:var(--text); width:100%; max-width:100%;
   box-sizing:border-box;
 }
 .field textarea{ resize:vertical; min-height:70px; }
 
-/* 가로배치 행 및 넘침 방지 처리 */
+/* 날짜 선택창 모바일 너비 오버플로우 강제 방지 */
+input[type="date"] {
+  width: 100% !important;
+  max-width: 100% !important;
+  box-sizing: border-box !important;
+  min-width: 0 !important;
+}
+
 .field-row{ display:flex; gap:10px; width:100%; box-sizing:border-box; }
 .field-row > .field{ flex:1; min-width:0; }
-.field-row > .field input,
-.field-row > .field select{ width:100%; min-width:0; box-sizing:border-box; }
-.field-row > .field.field-time{ flex:1; min-width:0; }
 
-/* 특이사항 날짜/시간 영역 반응형 수정 */
+/* 🔥 [핵심 수정] 특이사항 날짜와 시간을 무조건 '두 줄'로 수직 배치하되, 가로 넘침 100% 방지 */
 .vetnote-date-time{ 
-  display:flex; 
-  flex-wrap:wrap;
-  gap:10px; 
-  width:100%; 
-  box-sizing:border-box; 
+  display:flex !important; 
+  flex-direction:column !important; 
+  gap:10px !important; 
+  width:100% !important; 
+  box-sizing:border-box !important; 
 }
-.vetnote-date-time > .field{ flex:1; min-width:140px; }
-.vetnote-date-time > .field.field-time{ flex:1; min-width:140px; }
-.vetnote-date-time .timepick{ width:100%; }
+.vetnote-date-time > .field{ 
+  width:100% !important; 
+  max-width:100% !important; 
+  box-sizing:border-box !important;
+}
+.vetnote-date-time > .field.field-time{ 
+  width:100% !important; 
+  max-width:100% !important;
+  box-sizing:border-box !important; 
+}
 
-.field-grow{ flex:1 1 auto; min-width:0; }
-input[type="time"]{ min-width:0; box-sizing:border-box; }
-
-/* 시간 입력 박스 (두 개 입력창 가로배치) */
+/* 시간 입력 박스 레이아웃 (첫번째 줄 날짜와 독립적으로 안전하게 가로 배치) */
 .timepick{
-  display:flex;
-  align-items:center;
-  gap:6px;
-  width:100%;
-  min-width:0;
-  box-sizing:border-box;
+  display:flex !important;
+  align-items:center !important;
+  gap:8px !important;
+  width:100% !important;
+  box-sizing:border-box !important;
 }
 .timepick input{
-  flex:1;
-  width:100%;
-  min-width:0;
-  box-sizing:border-box;
-  text-align:center;
-  font-variant-numeric:tabular-nums;
-  font-size:15px;
-  font-weight:700;
-  padding:9px 2px !important;
+  flex:1 !important;
+  width:100% !important;
+  min-width:0 !important;
+  box-sizing:border-box !important;
+  text-align:center !important;
+  font-variant-numeric:tabular-nums !important;
+  font-size:15px !important;
+  font-weight:700 !important;
+  padding:9px 4px !important;
 }
 .timepick .tp-colon{ font-weight:700; color:var(--muted); flex-shrink:0; }
 
