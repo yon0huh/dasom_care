@@ -13,6 +13,7 @@ const ICONS = {
   pencil: '<path d="M4 20h4L18.5 9.5a2.1 2.1 0 00-3-3L4 17v3z"/><path d="M13.5 6.5l3 3"/>',
   chevL: '<polyline points="15 18 9 12 15 6"/>',
   chevR: '<polyline points="9 18 15 12 9 6"/>',
+  chevDown: '<polyline points="6 9 12 15 18 9"/>',
   droplet: '<path d="M12 2s7 8.7 7 13a7 7 0 01-14 0c0-4.3 7-13 7-13z"/>',
   drum: '<path d="M14 3a5 5 0 015 5c0 3-3 4-5 6l-4 4c-1.2 1.2-3 1.2-4.2 0-1.2-1.2-1.2-3 0-4.2l4-4c2-2 3-5 6-5z"/><circle cx="6.5" cy="17.5" r="2.2"/>',
   flame: '<path d="M12 2c2 4-2 5-2 9a4 4 0 008 0c0-3-2-4-2-7 3 2 4 5 4 8a6 6 0 01-12 0c0-4 2-6 4-10z"/>',
@@ -620,6 +621,7 @@ const state = {
   vetMediaDraft: [],
   showTargetEdit: false,
   historyView: "day", // 'day' | 'week' | 'month'
+  scheduleCollapsed: LS.get("dasom_schedule_collapsed", false),
 };
 if (!LS.get("dasom_schedule", null)) LS.set("dasom_schedule", state.schedule);
 
@@ -887,10 +889,14 @@ function renderToday() {
       </div>
     </div>
 
-    <div class="section-title"><h3>시간표</h3>
+    <div class="section-title">
+      <button class="collapse-toggle" data-action="toggle-schedule-collapse">
+        <span class="chev ${state.scheduleCollapsed ? "collapsed" : ""}">${icon("chevDown", 16)}</span>
+        <h3>시간표</h3>
+      </button>
       <button class="linkbtn" data-action="open-entry-form">${icon("plus", 15)} 자유 기록</button>
     </div>
-    ${scheduleHtml}
+    ${state.scheduleCollapsed ? "" : scheduleHtml}
 
     <div class="section-title"><h3>기록된 항목 (${entries.length})</h3></div>
     ${entries.length ? entriesHtml : `<div class="empty"><img src="icons/icon-192.png"/>아직 기록이 없어요. 위 시간표를 눌러 기록을 시작해보세요.</div>`}
@@ -1211,6 +1217,7 @@ function renderEntryModal(p) {
   const isFood = (p.category || "food") === "food";
   const status = p.foodStatus || "all";
   const eatenNow = isFood ? eatenAmount({ category: "food", amountG: p.amountG, foodStatus: status, leftoverG: p.leftoverG }) : 0;
+  const eatenWaterNow = isFood ? Math.max(0, num(p.waterMl) - num(p.leftoverWaterMl)) : 0;
   return `
   <div class="modal-backdrop" data-action="backdrop">
     <div class="modal" data-stop>
@@ -1239,12 +1246,15 @@ function renderEntryModal(p) {
           <button type="button" class="pillbtn status-none ${status === "none" ? "active" : ""}" data-status="none">안 먹음</button>
         </div>
       </div>
-      <div id="f_leftover_wrap" style="${isFood && status === "partial" ? "" : "display:none"}">
-        <div class="field-row">
+      <div id="f_leftover_wrap" class="leftover-block" style="${isFood && status === "partial" ? "" : "display:none"}">
+        <div class="field-row compact-row">
           <div class="field"><span>남긴 밥 (g)</span><input type="number" inputmode="decimal" id="f_leftover" value="${p.leftoverG || ""}" placeholder="0"/></div>
           <div class="field"><span>남긴 물 (ml)</span><input type="number" inputmode="decimal" id="f_leftover_water" value="${p.leftoverWaterMl || ""}" placeholder="0"/></div>
         </div>
-        <div class="field"><span>예상 섭취량</span><input type="text" id="f_eaten_display" value="${eatenNow}g" disabled/></div>
+        <div class="field-row compact-row">
+          <div class="field"><span>예상 섭취량 (밥)</span><input type="text" id="f_eaten_display" value="${eatenNow}g" disabled/></div>
+          <div class="field"><span>예상 섭취량 (물)</span><input type="text" id="f_eaten_water_display" value="${eatenWaterNow}ml" disabled/></div>
+        </div>
       </div>
       <div class="field"><span>메모</span><input id="f_note" value="${esc(p.note || "")}" placeholder="선택 사항"/></div>
       <div id="f_calc_hint"></div>
@@ -1386,6 +1396,12 @@ function bindGlobalEvents() {
     }
     if (action === "toggle-targets") {
       state.showTargetEdit = !state.showTargetEdit;
+      render();
+      return;
+    }
+    if (action === "toggle-schedule-collapse") {
+      state.scheduleCollapsed = !state.scheduleCollapsed;
+      LS.set("dasom_schedule_collapsed", state.scheduleCollapsed);
       render();
       return;
     }
@@ -1640,11 +1656,15 @@ function updateEntryHint() {
   const eatenDisplay = document.getElementById("f_eaten_display");
   if (eatenDisplay) eatenDisplay.value = `${eaten}g`;
 
+  const water = num(document.getElementById("f_water")?.value);
+  const leftoverWater = num(document.getElementById("f_leftover_water")?.value);
+  const eatenWater = isFoodCat ? Math.max(0, water - leftoverWater) : 0;
+  const eatenWaterDisplay = document.getElementById("f_eaten_water_display");
+  if (eatenWaterDisplay) eatenWaterDisplay.value = `${eatenWater}ml`;
+
   const hint = document.getElementById("f_calc_hint");
   if (!hint) return;
   const pid = document.getElementById("f_product").value;
-  const water = num(document.getElementById("f_water").value);
-  const leftoverWater = num(document.getElementById("f_leftover_water")?.value);
   const p = state.products.find((pp) => pp.id === pid);
   if (!p || !eaten) {
     hint.innerHTML = "";

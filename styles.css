@@ -112,6 +112,9 @@ input,select,textarea{ font-family:inherit; }
 }
 .section-title h3{ font-size:14px; font-weight:700; margin:0; }
 .linkbtn{ display:flex; align-items:center; gap:4px; font-size:13px; font-weight:600; color:var(--primary); }
+.collapse-toggle{ display:flex; align-items:center; gap:6px; padding:2px 2px 2px 0; }
+.collapse-toggle .chev{ display:flex; color:var(--muted); transition:transform .2s ease; }
+.collapse-toggle .chev.collapsed{ transform:rotate(-90deg); }
 
 .empty{
   text-align:center; font-size:13px; color:var(--muted);
@@ -261,8 +264,11 @@ input[type="date"] {
 .field-row > .field{ flex:1; min-width:0; }
 
 /* 남긴 물/밥 섹션과 예상 섭취량 사이 간격 */
-#f_leftover_wrap { display: flex; flex-direction: column; gap: 8px; }
+#f_leftover_wrap { display: flex; flex-direction: column; gap: 6px; margin-bottom: 6px; }
 #f_leftover_wrap > .field { margin-top: 0; }
+#f_leftover_wrap .field-row.compact-row{ margin-bottom: 0 !important; }
+#f_leftover_wrap .field{ margin-bottom: 0; }
+#f_leftover_wrap input:disabled{ opacity:.7; }
 
 /* 특이사항 날짜/시간 두 줄 배치 */
 .vetnote-date-time{ 
