@@ -86,15 +86,15 @@ const dowOf = (dateStr) => new Date(dateStr + "T00:00:00").getDay();
 const scheduleAppliesToday = (sc, dow) => !sc.days || !sc.days.length || sc.days.includes(dow);
 const esc = (s) => (s || "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 
-/* ---------- lightweight numeric time picker (no native OS wheel) ---------- */
+/* ---------- lightweight numeric time picker ---------- */
 function timeInputHtml(idPrefix, value) {
   const [h, m] = (value || "").split(":");
   const hh = h !== undefined && h !== "" ? parseInt(h, 10) : "";
   const mm = m !== undefined && m !== "" ? parseInt(m, 10) : "";
   return `<div class="timepick">
-    <input type="text" inputmode="numeric" pattern="[0-9]*" maxlength="2" class="tp-h" id="${idPrefix}_h" value="${hh === "" ? "" : String(hh).padStart(2, "0")}" placeholder="00"/>
+    <input type="text" inputmode="numeric" pattern="[0-9]*" maxlength="2" class="tp-h" id="${idPrefix}_h" value="${isNaN(hh) || hh === "" ? "" : String(hh).padStart(2, "0")}" placeholder="00"/>
     <span class="tp-colon">:</span>
-    <input type="text" inputmode="numeric" pattern="[0-9]*" maxlength="2" class="tp-m" id="${idPrefix}_m" value="${mm === "" ? "" : String(mm).padStart(2, "0")}" placeholder="00"/>
+    <input type="text" inputmode="numeric" pattern="[0-9]*" maxlength="2" class="tp-m" id="${idPrefix}_m" value="${isNaN(mm) || mm === "" ? "" : String(mm).padStart(2, "0")}" placeholder="00"/>
   </div>`;
 }
 function readTimeValue(idPrefix, allowEmpty = false) {
@@ -168,14 +168,13 @@ const FIREBASE_CONFIG = {
   appId: "1:374773537114:web:a479f2317af6e26cd87b63",
   measurementId: "G-CJY48CH60K",
 };
-// 이 키만 동기화 대상에서 제외 (기기마다 다른 코드를 쓸 수 있어야 하므로)
 const SYNC_SKIP_KEY = "dasom_household_code";
 
 const Sync = {
   db: null,
   storage: null,
   docRef: null,
-  code: null, // set later, after LS is fully defined below
+  code: null,
   active: false,
   connected: false,
   applyingRemote: false,
@@ -195,7 +194,6 @@ function syncInitFirebase() {
   return Sync.db;
 }
 
-/* ---------- cloud media (Firebase Storage): 가족 코드로 연결된 기기끼리 사진/영상 공유 ---------- */
 function syncInitStorage() {
   if (Sync.storage) return Sync.storage;
   if (typeof firebase === "undefined") return null;
@@ -239,9 +237,7 @@ async function deleteMediaFromCloud(id) {
   if (!storage) return;
   try {
     await storage.ref().child(mediaStoragePath(id)).delete();
-  } catch (err) {
-    // 이미 없거나 권한 문제면 조용히 넘어감
-  }
+  } catch (err) {}
 }
 async function getMediaRecord(id) {
   try {
@@ -256,7 +252,6 @@ async function getMediaRecord(id) {
   return rec;
 }
 
-// 동기화 대상: 제품/일정/목표/특이사항 + 날짜별 식사기록/일지 텍스트 (사진·영상 실제 파일은 Firebase Storage로 별도 업로드/다운로드됨)
 function collectSyncableState() {
   const out = {};
   out.dasom_products = LS.get("dasom_products", []);
@@ -364,7 +359,6 @@ function syncDisconnect() {
 }
 Sync.code = LS.get(SYNC_SKIP_KEY, null);
 
-
 const IDB = {
   _db: null,
   open() {
@@ -400,7 +394,7 @@ const IDB = {
       const tx = db.transaction("media", "readonly");
       const req = tx.objectStore("media").get(id);
       req.onsuccess = () => resolve(req.result || null);
-      req.onerror = () => reject(req.error);
+      req.onerror = () => reject(tx.error);
     });
   },
   async delete(id) {
@@ -449,7 +443,7 @@ function compressImage(file, maxDim = 1080, quality = 0.72) {
   });
 }
 
-/* ---------- video compression (ffmpeg.wasm, lazy-loaded) ---------- */
+/* ---------- video compression ---------- */
 let _ffmpegInstance = null;
 let _ffmpegLoadPromise = null;
 function loadFFmpegScript() {
@@ -463,7 +457,7 @@ function loadFFmpegScript() {
     }
     const script = document.createElement("script");
     script.id = "ffmpeg-lib-script";
-    script.src = "https://unpkg.com/@ffmpeg/" + "ffmpeg@0.11.6" + "/dist/ffmpeg.min.js";
+    script.src = "https://unpkg.com/@ffmpeg/ffmpeg@0.11.6/dist/ffmpeg.min.js";
     script.onload = () => resolve();
     script.onerror = reject;
     document.head.appendChild(script);
@@ -483,7 +477,7 @@ async function getFFmpegInstance() {
   }
   return _ffmpegLoadPromise;
 }
-// 최대 960px 변, 24fps, CRF30로 재인코딩 — 화질은 유지하면서 용량을 크게 줄임. 실패하면 원본을 그대로 사용.
+
 async function compressVideo(file) {
   try {
     const ffmpeg = await getFFmpegInstance();
@@ -520,12 +514,12 @@ const state = {
   products: LS.get("dasom_products", []),
   schedule: LS.get("dasom_schedule", null) || DEFAULT_SCHEDULE.map((s) => ({ ...s, _id: uid() })),
   targets: LS.get("dasom_targets", { water: "", protein: "", kcal: "", food: "" }),
-  modal: null, // {type:'entry'|'product'|'schedule'|'diary'|'vetnote', payload:{...}}
-  diaryMediaDraft: [], // [{tmpId, blob, url, type}]
+  modal: null,
+  diaryMediaDraft: [],
   vetNotes: LS.get("dasom_vetnotes", []),
   vetMediaDraft: [],
   showTargetEdit: false,
-  historyView: "day", // 'day' | 'week' | 'month'
+  historyView: "day",
 };
 if (!LS.get("dasom_schedule", null)) LS.set("dasom_schedule", state.schedule);
 
@@ -545,13 +539,12 @@ function saveVetNotes() {
   LS.set("dasom_vetnotes", state.vetNotes);
 }
 
-/* 먹은 양 계산: 식사 기록은 '다 먹음/일부 남김/안 먹음' 상태에 따라 실제 섭취량을 계산 */
 function eatenAmount(e) {
   const offered = num(e.amountG);
   if (e.category !== "food") return offered;
   if (e.foodStatus === "none") return 0;
   if (e.foodStatus === "partial") return Math.max(0, offered - num(e.leftoverG));
-  return offered; // 'all' 이거나 상태 미지정(기존 기록)인 경우 전량 섭취로 간주
+  return offered;
 }
 function calcEntry(e, products) {
   const p = e.productId ? products.find((pp) => pp.id === e.productId) : null;
@@ -593,7 +586,6 @@ function render() {
     ${renderTabbar()}
     ${state.modal ? renderModal() : ""}
   `;
-  bindGlobalEvents();
   bindTimeAutoAdvance(root);
 }
 
@@ -906,7 +898,7 @@ async function mountDiaryMedia() {
   }
 }
 
-/* ---------------- VET NOTES (특이사항) ---------------- */
+/* ---------------- VET NOTES ---------------- */
 function renderVetNoteItem(n) {
   return `
     <div class="vetnote ${n.resolved ? "resolved" : ""}">
@@ -1004,7 +996,7 @@ function aggregateHistory(granularity) {
       start.setDate(d.getDate() - d.getDay());
       key = `${start.getFullYear()}-${String(start.getMonth() + 1).padStart(2, "0")}-${String(start.getDate()).padStart(2, "0")}`;
     } else {
-      key = date.slice(0, 7); // YYYY-MM
+      key = date.slice(0, 7);
     }
     if (!map.has(key)) map.set(key, []);
     map.get(key).push(date);
@@ -1251,9 +1243,8 @@ function renderVetNoteModal(p) {
 
 /* ============================= EVENTS ============================= */
 function bindGlobalEvents() {
-  document.querySelectorAll("[data-action]").forEach((el) => {
-    if (el._bound) return;
-  });
+  if (root._delegatedBound) return;
+  root._delegatedBound = true;
 
   root.onclick = async (e) => {
     const t = e.target.closest("[data-action]");
@@ -1470,12 +1461,6 @@ function bindGlobalEvents() {
     }
   };
 
-  // these are delegated on the persistent #app root, so only bind them once
-  // (otherwise they'd stack up on every render() call)
-  if (root._delegatedBound) return;
-  root._delegatedBound = true;
-
-  // category / food-status pill selection (event delegation, since re-render happens only on submit)
   root.addEventListener("click", (e) => {
     const dayBtn = e.target.closest("[data-day]");
     if (dayBtn) {
@@ -1507,7 +1492,6 @@ function bindGlobalEvents() {
     }
   });
 
-  // live nutrition hint in entry form
   root.addEventListener("input", (e) => {
     if (["f_product", "f_amount", "f_water", "f_leftover"].includes(e.target.id)) updateEntryHint();
   });
@@ -1540,8 +1524,12 @@ function updateEntryHint() {
 
   const hint = document.getElementById("f_calc_hint");
   if (!hint) return;
-  const pid = document.getElementById("f_product").value;
-  const water = num(document.getElementById("f_water").value);
+  const prodEl = document.getElementById("f_product");
+  const waterEl = document.getElementById("f_water");
+  if (!prodEl || !waterEl) return;
+
+  const pid = prodEl.value;
+  const water = num(waterEl.value);
   const p = state.products.find((pp) => pp.id === pid);
   if (!p || !eaten) {
     hint.innerHTML = "";
@@ -1572,16 +1560,17 @@ function closeModal() {
 }
 
 function saveEntryFromForm(id, fromSchedule) {
-  const label = document.getElementById("f_label").value.trim();
-  if (!label) return;
+  const labelEl = document.getElementById("f_label");
+  if (!labelEl || !labelEl.value.trim()) return;
+  const label = labelEl.value.trim();
   const time = readTimeValue("f_time");
   const category = document.querySelector("#f_category_row .pillbtn.active")?.getAttribute("data-cat") || "food";
-  const productId = document.getElementById("f_product").value || null;
-  const amountG = document.getElementById("f_amount").value;
-  const waterMl = document.getElementById("f_water").value;
-  const note = document.getElementById("f_note").value.trim();
+  const productId = document.getElementById("f_product")?.value || null;
+  const amountG = document.getElementById("f_amount")?.value || "";
+  const waterMl = document.getElementById("f_water")?.value || "";
+  const note = document.getElementById("f_note")?.value.trim() || "";
   const foodStatus = category === "food" ? document.querySelector("#f_foodstatus_row .pillbtn.active")?.getAttribute("data-status") || "all" : undefined;
-  const leftoverG = category === "food" && foodStatus === "partial" ? document.getElementById("f_leftover").value : undefined;
+  const leftoverG = category === "food" && foodStatus === "partial" ? document.getElementById("f_leftover")?.value : undefined;
 
   const entries = getEntries(state.date);
   const entry = { id: id || uid(), time, label, category, productId, amountG, waterMl, note, foodStatus, leftoverG, fromSchedule: fromSchedule || undefined };
@@ -1595,15 +1584,16 @@ function saveEntryFromForm(id, fromSchedule) {
 }
 
 function saveProductFromForm(id) {
-  const name = document.getElementById("p_name").value.trim();
-  if (!name) return;
+  const nameEl = document.getElementById("p_name");
+  if (!nameEl || !nameEl.value.trim()) return;
+  const name = nameEl.value.trim();
   const product = {
     id: id || uid(),
     name,
-    waterPct: document.getElementById("p_water").value,
-    proteinPct: document.getElementById("p_protein").value,
-    fatPct: document.getElementById("p_fat").value,
-    kcalPer100g: document.getElementById("p_kcal").value,
+    waterPct: document.getElementById("p_water")?.value || "",
+    proteinPct: document.getElementById("p_protein")?.value || "",
+    fatPct: document.getElementById("p_fat")?.value || "",
+    kcalPer100g: document.getElementById("p_kcal")?.value || "",
   };
   const idx = state.products.findIndex((p) => p.id === product.id);
   if (idx >= 0) state.products[idx] = product;
@@ -1614,8 +1604,9 @@ function saveProductFromForm(id) {
 }
 
 function saveScheduleFromForm(id) {
-  const label = document.getElementById("s_label").value.trim();
-  if (!label) return;
+  const labelEl = document.getElementById("s_label");
+  if (!labelEl || !labelEl.value.trim()) return;
+  const label = labelEl.value.trim();
   const days = Array.from(document.querySelectorAll("#s_days_row .pillbtn.active"))
     .map((b) => parseInt(b.getAttribute("data-day"), 10))
     .sort((a, b) => a - b);
@@ -1646,7 +1637,7 @@ async function handleMediaFiles(fileList, getDraftArray, previewElId, renderPrev
         if (preview) preview.outerHTML = renderPreviewFn();
         compressVideo(file).then((compressedBlob) => {
           const item = getDraftArray().find((m) => m.tmpId === tmpId);
-          if (!item) return; // 압축 중 사용자가 삭제한 경우
+          if (!item) return;
           URL.revokeObjectURL(item.url);
           item.blob = compressedBlob;
           item.url = URL.createObjectURL(compressedBlob);
@@ -1679,7 +1670,7 @@ async function saveDiaryFromForm(date) {
     alert("영상 압축이 끝날 때까지 잠시만 기다려주세요.");
     return;
   }
-  const text = document.getElementById("d_text").value.trim();
+  const text = document.getElementById("d_text")?.value.trim() || "";
   const existing = getDiary(date);
   const newIds = [];
   for (const m of state.diaryMediaDraft) {
@@ -1714,10 +1705,10 @@ async function saveVetNoteFromForm(id) {
     alert("영상 압축이 끝날 때까지 잠시만 기다려주세요.");
     return;
   }
-  const date = document.getElementById("v_date").value || todayStr();
+  const date = document.getElementById("v_date")?.value || todayStr();
   const time = readTimeValue("v_time", true);
-  const text = document.getElementById("v_text").value.trim();
-  const resolved = document.getElementById("v_resolved").checked;
+  const text = document.getElementById("v_text")?.value.trim() || "";
+  const resolved = document.getElementById("v_resolved")?.checked || false;
   const existing = id ? state.vetNotes.find((n) => n.id === id) : null;
   const newIds = [];
   for (const m of state.vetMediaDraft) {
@@ -1756,6 +1747,7 @@ if ("serviceWorker" in navigator) {
   });
 }
 
+bindGlobalEvents();
 render();
 if (state.tab === "diary") mountDiaryMedia();
 if (state.tab === "vetnote") mountVetMedia();
