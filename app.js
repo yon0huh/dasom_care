@@ -871,24 +871,40 @@ function renderToday() {
 
     <div class="summary">
       <div class="summary-head">
-        <span>오늘의 섭취 요약</span>
-        <button data-action="toggle-targets" style="color:#fff;opacity:.85">${icon("pencil", 14)}</button>
+        <span class="summary-title">${icon("sparkles", 15)} 오늘의 섭취 요약</span>
+        <button class="summary-edit" data-action="toggle-targets">${icon("pencil", 14)}</button>
       </div>
       <div class="stat-grid">
-        <div class="stat"><div class="lab">${icon("droplet", 13)} 총 수분</div>
-          <div class="val">${s.water.toFixed(0)}<small> ml</small></div>
+        <div class="stat stat--water">
+          <div class="stat-icn">${icon("droplet", 15)}</div>
+          <div class="stat-body">
+            <div class="lab">총 수분</div>
+            <div class="val">${s.water.toFixed(1)}<small> ml</small></div>
+          </div>
           ${wPct !== null ? `<div class="bar"><i style="width:${wPct}%"></i></div>` : ""}
         </div>
-        <div class="stat"><div class="lab">${icon("drum", 13)} 총 단백질</div>
-          <div class="val">${s.protein.toFixed(1)}<small> g</small></div>
+        <div class="stat stat--protein">
+          <div class="stat-icn">${icon("drum", 15)}</div>
+          <div class="stat-body">
+            <div class="lab">총 단백질</div>
+            <div class="val">${s.protein.toFixed(1)}<small> g</small></div>
+          </div>
           ${pPct !== null ? `<div class="bar"><i style="width:${pPct}%"></i></div>` : ""}
         </div>
-        <div class="stat"><div class="lab">${icon("flame", 13)} 칼로리</div>
-          <div class="val">${s.kcal.toFixed(0)}<small> kcal</small></div>
+        <div class="stat stat--kcal">
+          <div class="stat-icn">${icon("flame", 15)}</div>
+          <div class="stat-body">
+            <div class="lab">칼로리</div>
+            <div class="val">${s.kcal.toFixed(0)}<small> kcal</small></div>
+          </div>
           ${kPct !== null ? `<div class="bar"><i style="width:${kPct}%"></i></div>` : ""}
         </div>
-        <div class="stat"><div class="lab">${icon("utensils", 13)} 총 제공량</div>
-          <div class="val">${s.foodOfferedG.toFixed(0)}<small> g</small></div>
+        <div class="stat stat--food">
+          <div class="stat-icn">${icon("utensils", 15)}</div>
+          <div class="stat-body">
+            <div class="lab">총 제공량</div>
+            <div class="val">${s.foodOfferedG.toFixed(0)}<small> g</small></div>
+          </div>
           ${fPct !== null ? `<div class="bar"><i style="width:${fPct}%"></i></div>` : ""}
         </div>
       </div>
@@ -1256,8 +1272,12 @@ function renderEntryItemsRows() {
       const canRemove = state.entryItemsDraft.length > 1;
       return `
       <div class="item-row">
-        <select class="f_item_product" data-idx="${idx}"><option value="">선택 안 함</option>${options}</select>
-        <input type="number" inputmode="decimal" class="f_item_amount" data-idx="${idx}" value="${it.amountG || ""}" placeholder="g"/>
+        <div class="item-num">${idx + 1}</div>
+        <select class="f_item_product" data-idx="${idx}"><option value="">제품 선택 안 함</option>${options}</select>
+        <div class="item-amount-wrap">
+          <input type="number" inputmode="decimal" class="f_item_amount" data-idx="${idx}" value="${it.amountG || ""}" placeholder="0"/>
+          <span class="item-amount-unit">g</span>
+        </div>
         <button type="button" class="item-row-rm" data-action="rm-entry-item" data-idx="${idx}" ${canRemove ? "" : "style=\"visibility:hidden\""}>${icon("x", 14)}</button>
       </div>`;
     })
