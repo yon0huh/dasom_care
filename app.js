@@ -871,7 +871,7 @@ function renderToday() {
 
     <div class="summary">
       <div class="summary-head">
-        <span class="summary-title">${icon("sparkles", 15)} 오늘의 섭취 요약</span>
+        <span class="summary-title">오늘의 섭취 요약</span>
         <button class="summary-edit" data-action="toggle-targets">${icon("pencil", 14)}</button>
       </div>
       <div class="stat-grid">
@@ -1272,7 +1272,7 @@ function renderEntryItemsRows() {
       const canRemove = state.entryItemsDraft.length > 1;
       return `
       <div class="item-row">
-        <div class="item-num">${idx + 1}</div>
+        <div class="item-num">${idx + 1}.</div>
         <select class="f_item_product" data-idx="${idx}"><option value="">제품 선택 안 함</option>${options}</select>
         <div class="item-amount-wrap">
           <input type="number" inputmode="decimal" class="f_item_amount" data-idx="${idx}" value="${it.amountG || ""}" placeholder="0"/>
