@@ -185,6 +185,7 @@ const Sync = {
   retryTimer: null,
   resumeTimer: null,
   error: null,
+  storageWarning: null,
 };
 
 function syncInitFirebase() {
@@ -195,6 +196,13 @@ function syncInitFirebase() {
   }
   if (!firebase.apps.length) firebase.initializeApp(FIREBASE_CONFIG);
   Sync.db = firebase.firestore();
+  // 일부 모바일 브라우저(삼성인터넷 등)는 Firestore의 기본 스트리밍(웹소켓) 연결을 새로고침 후
+  // 제대로 재연결하지 못하는 경우가 있어, 더 호환성 높은 long-polling 방식을 강제한다.
+  try {
+    Sync.db.settings({ experimentalAutoDetectLongPolling: true, useFetchStreams: false });
+  } catch (e) {
+    // settings()는 firestore() 최초 호출 이후 딱 한 번만 적용 가능 — 이미 적용됐다면 조용히 무시
+  }
   return Sync.db;
 }
 
@@ -223,18 +231,23 @@ async function uploadMediaToCloud(id, mime, blob) {
     return true;
   } catch (err) {
     console.error("사진/영상 업로드 실패", err);
+    Sync.error = "사진/영상이 가족에게 공유되지 않았어요. Firebase Storage 설정을 확인해주세요.";
+    if (state.modal && state.modal.type === "sync") render();
     return false;
   }
 }
-async function fetchMediaFromCloud(id) {
+async function fetchMediaUrlFromCloud(id) {
   if (!Sync.active || !Sync.code) return null;
   const storage = syncInitStorage();
   if (!storage) return null;
   try {
-    const url = await storage.ref().child(mediaStoragePath(id)).getDownloadURL();
-    const res = await fetch(url);
-    return await res.blob();
+    const ref = storage.ref().child(mediaStoragePath(id));
+    const [url, meta] = await Promise.all([ref.getDownloadURL(), ref.getMetadata().catch(() => null)]);
+    const mime = meta?.contentType || "";
+    const type = mime.startsWith("video/") ? "video" : "image";
+    return { url, type, mime };
   } catch (err) {
+    console.error("사진/영상 불러오기 실패", err);
     return null;
   }
 }
@@ -248,17 +261,16 @@ async function deleteMediaFromCloud(id) {
     // 이미 없거나 권한 문제면 조용히 넘어감
   }
 }
+// 로컬(IDB)에 있으면 그걸 쓰고, 없으면 클라우드 URL을 직접 이미지/영상 소스로 사용한다.
+// (fetch로 바이트를 직접 읽어오는 대신 <img src>로 바로 로드하면 브라우저 CORS 제약을 받지 않는다.)
 async function getMediaRecord(id) {
   try {
     const local = await IDB.get(id);
-    if (local) return local;
+    if (local) return { id, type: local.type, mime: local.mime, url: URL.createObjectURL(local.blob), remote: false };
   } catch (e) {}
-  const blob = await fetchMediaFromCloud(id);
-  if (!blob) return null;
-  const type = blob.type && blob.type.startsWith("video/") ? "video" : "image";
-  const rec = { id, type, mime: blob.type, blob };
-  IDB.put(rec).catch(() => {});
-  return rec;
+  const cloud = await fetchMediaUrlFromCloud(id);
+  if (!cloud) return null;
+  return { id, type: cloud.type, mime: cloud.mime, url: cloud.url, remote: true };
 }
 
 // 동기화 대상: 제품/일정/목표/특이사항 + 날짜별 식사기록/일지 텍스트 (사진·영상 실제 파일은 Firebase Storage로 별도 업로드/다운로드됨)
@@ -329,7 +341,16 @@ function syncConnect(codeRaw) {
     Sync.unsub = null;
   }
   Sync.code = code;
-  localStorage.setItem(SYNC_SKIP_KEY, code);
+  let storageOk = true;
+  try {
+    localStorage.setItem(SYNC_SKIP_KEY, code);
+    storageOk = localStorage.getItem(SYNC_SKIP_KEY) === code;
+  } catch (e) {
+    storageOk = false;
+  }
+  Sync.storageWarning = storageOk
+    ? null
+    : "이 브라우저가 연결 정보를 저장하지 못했어요. 앱을 새로고침하면 다시 연결이 끊길 수 있어요 — 브라우저의 '종료 시 데이터 삭제' 설정을 꺼주세요.";
   Sync.docRef = db.collection("households").doc(code);
   Sync.active = true;
   Sync.connected = false;
@@ -1046,8 +1067,11 @@ async function mountDiaryMedia() {
     const html = [];
     for (const id of d.mediaIds) {
       const rec = await getMediaRecord(id);
-      if (!rec) continue;
-      const url = URL.createObjectURL(rec.blob);
+      if (!rec) {
+        html.push(`<div class="m" style="display:flex;align-items:center;justify-content:center;background:var(--surface-alt);color:var(--muted);font-size:10px;text-align:center;padding:4px">불러오기 실패</div>`);
+        continue;
+      }
+      const url = rec.url;
       if (rec.type === "video") {
         html.push(`<div class="m" data-action="view-media" data-url="${url}" data-media-type="video"><video src="${url}" muted playsinline preload="metadata"></video><span class="vic">${icon("play", 11)}</span></div>`);
       } else {
@@ -1108,8 +1132,11 @@ async function mountVetMedia() {
     const html = [];
     for (const mid of n.mediaIds) {
       const rec = await getMediaRecord(mid);
-      if (!rec) continue;
-      const url = URL.createObjectURL(rec.blob);
+      if (!rec) {
+        html.push(`<div class="m" style="display:flex;align-items:center;justify-content:center;background:var(--surface-alt);color:var(--muted);font-size:10px;text-align:center;padding:4px">불러오기 실패</div>`);
+        continue;
+      }
+      const url = rec.url;
       if (rec.type === "video") {
         html.push(`<div class="m" data-action="view-media" data-url="${url}" data-media-type="video"><video src="${url}" muted playsinline preload="metadata"></video><span class="vic">${icon("play", 11)}</span></div>`);
       } else {
@@ -1240,6 +1267,7 @@ function renderSyncModal() {
         <input id="sync_code" value="${esc(Sync.code || "")}" placeholder="예: DASOM01 (비워두면 새로 생성)" maxlength="10" style="text-transform:uppercase"/>
       </div>
       ${Sync.error ? `<div class="hint" style="background:color-mix(in srgb, var(--danger) 15%, transparent);color:var(--danger)">${esc(Sync.error)}</div>` : ""}
+      ${Sync.storageWarning ? `<div class="hint" style="background:color-mix(in srgb, var(--warn) 18%, transparent);color:var(--warn)">⚠️ ${esc(Sync.storageWarning)}</div>` : ""}
       <div class="muted" style="font-size:12px;margin:-4px 0 14px">${statusText}</div>
       <button class="savebtn" data-action="save-sync">연결하기</button>
       ${Sync.active ? `<button class="savebtn" style="background:var(--danger);margin-top:8px" data-action="disconnect-sync">이 기기만 연결 해제</button>` : ""}
