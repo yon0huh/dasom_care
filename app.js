@@ -182,6 +182,8 @@ const Sync = {
   applyingRemote: false,
   unsub: null,
   pushTimer: null,
+  retryTimer: null,
+  resumeTimer: null,
   error: null,
 };
 
@@ -348,11 +350,29 @@ function syncConnect(codeRaw) {
     (err) => {
       console.error(err);
       Sync.connected = false;
-      Sync.error = "연결 실패: 코드를 확인하거나 네트워크를 확인해주세요.";
-      render();
+      Sync.error = "연결이 잠시 끊겼어요. 자동으로 다시 연결할게요...";
+      if (state.modal && state.modal.type === "sync") render();
+      // 백그라운드/네트워크 전환 등으로 리스너가 끊긴 경우, 잠시 후 자동 재연결 시도
+      if (Sync.active && Sync.code) {
+        clearTimeout(Sync.retryTimer);
+        Sync.retryTimer = setTimeout(() => syncConnect(Sync.code), 3000);
+      }
     }
   );
 }
+
+// iOS/Android에서 앱이 백그라운드로 가면 실시간 연결(웹소켓)이 강제로 끊기고,
+// 다시 포그라운드로 돌아와도 자동으로 재연결되지 않는 경우가 있어 수동으로 재연결해준다.
+function syncResumeIfNeeded() {
+  if (!Sync.active || !Sync.code) return;
+  clearTimeout(Sync.resumeTimer);
+  Sync.resumeTimer = setTimeout(() => syncConnect(Sync.code), 250);
+}
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "visible") syncResumeIfNeeded();
+});
+window.addEventListener("pageshow", syncResumeIfNeeded);
+window.addEventListener("online", syncResumeIfNeeded);
 
 function syncDisconnect() {
   if (Sync.unsub) {
