@@ -268,6 +268,32 @@ async function getMediaRecord(id) {
   if (!cloud) return null;
   return { id, type: cloud.type, mime: cloud.mime, url: cloud.url, remote: true };
 }
+// 사진/영상을 저장할 당시 가족 연결이 끊겨 있었으면 클라우드 업로드가 조용히 실패하고
+// 기기에만 저장된다. 그러면 글(텍스트)은 Firestore로 동기화되어 다른 기기에 보이지만,
+// 정작 사진 파일은 Storage에 없어서 다른 기기에서는 보이지 않는 문제가 생긴다.
+// 연결이 (다시) 맺어질 때마다 아직 업로드하지 못한 사진/영상이 있는지 확인해서 재시도한다.
+let mediaRetryInFlight = false;
+async function retryPendingMediaUploads() {
+  if (!Sync.active || !Sync.code || mediaRetryInFlight) return;
+  mediaRetryInFlight = true;
+  try {
+    const all = await IDB.getAll();
+    const pending = all.filter((r) => !r.cloud);
+    for (const r of pending) {
+      const ok = await uploadMediaToCloud(r.id, r.mime, r.blob);
+      if (ok) {
+        r.cloud = true;
+        try {
+          await IDB.put(r);
+        } catch (e) {}
+      }
+    }
+  } catch (e) {
+    console.error("보류 중이던 사진/영상 재업로드 실패", e);
+  } finally {
+    mediaRetryInFlight = false;
+  }
+}
 
 // 동기화 대상: 제품/일정/목표/특이사항 + 날짜별 식사기록/일지 텍스트 (사진·영상 실제 파일은 Firebase Storage로 별도 업로드/다운로드됨)
 function collectSyncableState() {
@@ -372,6 +398,7 @@ function syncConnect(codeRaw, opts) {
       } else {
         Sync.docRef.set({ state: collectSyncableState(), updatedAt: firebase.firestore.FieldValue.serverTimestamp() });
       }
+      retryPendingMediaUploads();
       if (state.modal && state.modal.type === "sync") render();
     },
     (err) => {
@@ -473,6 +500,15 @@ const IDB = {
       tx.objectStore("media").delete(id);
       tx.oncomplete = () => resolve(true);
       tx.onerror = () => reject(tx.error);
+    });
+  },
+  async getAll() {
+    const db = await this.open();
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction("media", "readonly");
+      const req = tx.objectStore("media").getAll();
+      req.onsuccess = () => resolve(req.result || []);
+      req.onerror = () => reject(req.error);
     });
   },
 };
@@ -1995,7 +2031,7 @@ async function saveDiaryFromForm(date) {
     const id = uid();
     const cloudSaved = await uploadMediaToCloud(id, m.blob.type, m.blob);
     try {
-      await IDB.put({ id, date, type: m.type, mime: m.blob.type, blob: m.blob });
+      await IDB.put({ id, date, type: m.type, mime: m.blob.type, blob: m.blob, cloud: cloudSaved });
       newIds.push(id);
     } catch (err) {
       if (cloudSaved) {
@@ -2038,7 +2074,7 @@ async function saveVetNoteFromForm(id) {
     const mid = uid();
     const cloudSaved = await uploadMediaToCloud(mid, m.blob.type, m.blob);
     try {
-      await IDB.put({ id: mid, date, type: m.type, mime: m.blob.type, blob: m.blob });
+      await IDB.put({ id: mid, date, type: m.type, mime: m.blob.type, blob: m.blob, cloud: cloudSaved });
       newIds.push(mid);
     } catch (err) {
       if (cloudSaved) {
@@ -2063,15 +2099,18 @@ async function saveVetNoteFromForm(id) {
 }
 
 /* ============================= INIT ============================= */
+// 예전에는 controllerchange(새 서비스워커가 페이지를 넘겨받는 시점)가 발생할 때마다
+// window.location.reload()를 강제로 호출했다. 문제는 이 이벤트가 "새 버전 배포" 때뿐
+// 아니라 이 앱을 처음 여는 순간(아직 컨트롤러가 없던 페이지가 막 등록된 서비스워커의
+// 통제를 받기 시작하는 순간)에도 똑같이 발생한다는 것 — 그런데 그 타이밍이 하필 가족
+// 코드로 Firestore 실시간 연결을 맺는 초기화 시점과 겹쳐서, 연결이 완전히 맺어지기
+// 전에 페이지가 새로고침되어 매번 연결이 끊기고 있었다. 핵심 파일(index.html/app.js
+// 등)은 이미 네트워크 우선(network-first)으로 fetch하므로 매번 최신 버전을 받아오고,
+// 강제 새로고침 없이도 다음 방문 때 자연히 최신 코드로 갱신된다. 따라서 이 강제
+// 새로고침 로직은 필요 없고, 동기화 연결만 방해하므로 제거한다.
 if ("serviceWorker" in navigator) {
   window.addEventListener("load", () => {
     navigator.serviceWorker.register("sw.js").catch(() => {});
-  });
-  let refreshed = false;
-  navigator.serviceWorker.addEventListener("controllerchange", () => {
-    if (refreshed) return;
-    refreshed = true;
-    window.location.reload();
   });
 }
 
