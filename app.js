@@ -186,6 +186,9 @@ const Sync = {
   resumeTimer: null,
   error: null,
   storageWarning: null,
+  connecting: false,
+  retryCount: 0,
+  lastConnectAt: 0,
 };
 
 function syncInitFirebase() {
@@ -324,15 +327,19 @@ function schedulePush() {
   }, 700);
 }
 
-function syncConnect(codeRaw) {
-  const db = syncInitFirebase();
-  if (!db) {
-    render();
-    return;
-  }
+function syncConnect(codeRaw, opts) {
+  opts = opts || {};
   const code = (codeRaw || "").trim().toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 10);
   if (!code) {
     Sync.error = "코드를 입력해주세요.";
+    render();
+    return;
+  }
+  // 이미 같은 코드로 연결(재연결) 시도 중이면 중복 호출을 막는다 — 여러 트리거(포그라운드 복귀,
+  // 네트워크 재연결, 에러 재시도)가 겹치면서 재연결이 폭주해 화면이 계속 다시 그려지는 걸 방지.
+  if (!opts.force && Sync.connecting && Sync.code === code) return;
+  const db = syncInitFirebase();
+  if (!db) {
     render();
     return;
   }
@@ -340,6 +347,10 @@ function syncConnect(codeRaw) {
     Sync.unsub();
     Sync.unsub = null;
   }
+  clearTimeout(Sync.retryTimer);
+  Sync.connecting = true;
+  Sync.lastConnectAt = Date.now();
+  if (opts.resetRetries !== false) Sync.retryCount = 0;
   Sync.code = code;
   let storageOk = true;
   try {
@@ -359,6 +370,8 @@ function syncConnect(codeRaw) {
 
   Sync.unsub = Sync.docRef.onSnapshot(
     (snap) => {
+      Sync.connecting = false;
+      Sync.retryCount = 0;
       Sync.connected = true;
       Sync.error = null;
       if (snap.exists) {
@@ -370,13 +383,20 @@ function syncConnect(codeRaw) {
     },
     (err) => {
       console.error(err);
+      Sync.connecting = false;
       Sync.connected = false;
+      Sync.retryCount = (Sync.retryCount || 0) + 1;
+      if (Sync.retryCount > 5) {
+        // 계속 실패하면 자동 재시도를 멈추고 사용자가 직접 다시 연결하도록 안내 (무한 재시도로 인한 화면 버벅임 방지)
+        Sync.error = "연결에 계속 실패하고 있어요. 네트워크를 확인하고 '연결하기'를 다시 눌러주세요.";
+        if (state.modal && state.modal.type === "sync") render();
+        return;
+      }
       Sync.error = "연결이 잠시 끊겼어요. 자동으로 다시 연결할게요...";
       if (state.modal && state.modal.type === "sync") render();
-      // 백그라운드/네트워크 전환 등으로 리스너가 끊긴 경우, 잠시 후 자동 재연결 시도
       if (Sync.active && Sync.code) {
-        clearTimeout(Sync.retryTimer);
-        Sync.retryTimer = setTimeout(() => syncConnect(Sync.code), 3000);
+        const backoff = Math.min(30000, 3000 * Sync.retryCount);
+        Sync.retryTimer = setTimeout(() => syncConnect(Sync.code, { force: true, resetRetries: false }), backoff);
       }
     }
   );
@@ -384,15 +404,21 @@ function syncConnect(codeRaw) {
 
 // iOS/Android에서 앱이 백그라운드로 가면 실시간 연결(웹소켓)이 강제로 끊기고,
 // 다시 포그라운드로 돌아와도 자동으로 재연결되지 않는 경우가 있어 수동으로 재연결해준다.
+// (단, 페이지를 막 새로 로드/새로고침한 직후에는 이미 초기 연결이 진행 중이므로 중복 연결을 만들지 않는다.)
 function syncResumeIfNeeded() {
   if (!Sync.active || !Sync.code) return;
+  if (Date.now() - Sync.lastConnectAt < 4000) return; // 방금 막 연결을 시도했으면 중복 재연결 생략
   clearTimeout(Sync.resumeTimer);
-  Sync.resumeTimer = setTimeout(() => syncConnect(Sync.code), 250);
+  Sync.resumeTimer = setTimeout(() => syncConnect(Sync.code, { force: true }), 250);
 }
 document.addEventListener("visibilitychange", () => {
   if (document.visibilityState === "visible") syncResumeIfNeeded();
 });
-window.addEventListener("pageshow", syncResumeIfNeeded);
+// pageshow는 일반적인 새 로드/새로고침에도 항상 발생하므로, 뒤로가기 캐시(bfcache)에서
+// 복원된 경우(event.persisted === true)에만 재연결을 시도한다.
+window.addEventListener("pageshow", (e) => {
+  if (e.persisted) syncResumeIfNeeded();
+});
 window.addEventListener("online", syncResumeIfNeeded);
 
 function syncDisconnect() {
