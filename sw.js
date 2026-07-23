@@ -1,7 +1,7 @@
 /* Bump this version string every time you deploy new app.js/styles.css/index.html.
    Changing it forces old phones to drop their stale cache instead of getting stuck
    showing an older, possibly-broken version of the app forever. */
-const CACHE = "dasom-care-v21";
+const CACHE = "dasom-care-v22";
 const ASSETS = [
   "./index.html",
   "./styles.css",

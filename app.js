@@ -452,7 +452,17 @@ function syncDisconnect() {
   localStorage.removeItem(SYNC_SKIP_KEY);
   render();
 }
-Sync.code = LS.get(SYNC_SKIP_KEY, null);
+// 가족 코드는 순수 문자열로 저장(localStorage.setItem)했는데, 지금까지 이 코드를
+// LS.get()으로 읽고 있었다. LS.get은 내부적으로 JSON.parse를 거치는데, "DASOM" 같은
+// 코드는 올바른 JSON이 아니라서 JSON.parse가 항상 실패하고 조용히 null로 대체되고
+// 있었다 — 그래서 새로고침/재실행할 때마다 예외 없이 매번 연결이 끊긴 것처럼
+// 보였던 것. (서비스워커의 강제 새로고침 문제와는 별개의, 훨씬 더 근본적인 원인.)
+// 저장할 때와 동일하게 원시 문자열 그대로 읽어온다.
+try {
+  Sync.code = localStorage.getItem(SYNC_SKIP_KEY) || null;
+} catch (e) {
+  Sync.code = null;
+}
 
 
 const IDB = {
