@@ -768,7 +768,9 @@ function calcEntry(e, products) {
   const offered = items.reduce((s, it) => s + num(it.amountG), 0);
   const eaten = eatenAmount({ category: e.category, amountG: offered, foodStatus: e.foodStatus, leftoverG: e.leftoverG });
   const ratio = offered > 0 ? eaten / offered : 0;
-  const extraWater = eaten > 0 || e.category !== "food" ? num(e.waterMl) : 0;
+  // 밥 없이 물만 기록한 경우(음식 제품을 하나도 넣지 않은 경우)에도 수분 섭취량에 포함되도록 처리.
+  // 음식을 함께 기록했는데 '안 먹음'으로 전량 남긴 경우에만 물도 안 마신 것으로 간주해 제외한다.
+  const extraWater = e.category !== "food" || offered === 0 || eaten > 0 ? num(e.waterMl) : 0;
   const leftoverWater = e.category === "food" && e.foodStatus === "partial" ? num(e.leftoverWaterMl) : 0;
   let protein = 0,
     fat = 0,
@@ -1915,10 +1917,10 @@ function closeModal() {
 }
 
 function saveEntryFromForm(id, fromSchedule) {
-  const label = document.getElementById("f_label").value.trim();
-  if (!label) return;
   const time = readTimeValue("f_time");
   const category = document.querySelector("#f_category_row .pillbtn.active")?.getAttribute("data-cat") || "food";
+  // 제목을 안 적으면 저장이 안 되던 문제 수정: 제목이 비어있으면 카테고리명(예: "식사/간식")을 기본 제목으로 사용.
+  const label = document.getElementById("f_label").value.trim() || catMeta(category).label;
   const items = readItemRowsFromDOM()
     .map((it) => ({ productId: it.productId || null, amountG: it.amountG || "" }))
     .filter((it) => it.productId || num(it.amountG) > 0);
