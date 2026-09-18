@@ -786,7 +786,10 @@ function calcEntry(e, products) {
     kcal += (itemEaten * num(p.kcalPer100g)) / 100;
     moisture += (itemEaten * num(p.waterPct)) / 100;
   });
-  return { protein, fat, kcal, moisture, totalWater: Math.max(0, moisture + extraWater - leftoverWater), eaten, offered };
+  // 물(순수 물)은 남긴 만큼(leftoverWater)을 먼저 뺀 뒤, 사료 수분(moisture)과 합쳐서 총 수분을 구한다.
+  // 이렇게 하면 "사료 수분 / 순수 물 / 총합"을 각각 따로 보여줄 수 있다.
+  const pureWater = Math.max(0, extraWater - leftoverWater);
+  return { protein, fat, kcal, moisture, foodWater: moisture, pureWater, totalWater: moisture + pureWater, eaten, offered };
 }
 function daySummary(entries, products) {
   return entries.reduce(
@@ -796,13 +799,15 @@ function daySummary(entries, products) {
       acc.fat += c.fat;
       acc.kcal += c.kcal;
       acc.water += c.totalWater;
+      acc.foodWater += c.foodWater;
+      acc.pureWater += c.pureWater;
       if (e.category === "food") {
         acc.foodOfferedG += c.offered;
         acc.foodEatenG += c.eaten;
       }
       return acc;
     },
-    { protein: 0, fat: 0, kcal: 0, water: 0, foodOfferedG: 0, foodEatenG: 0 }
+    { protein: 0, fat: 0, kcal: 0, water: 0, foodWater: 0, pureWater: 0, foodOfferedG: 0, foodEatenG: 0 }
   );
 }
 
@@ -944,7 +949,13 @@ function renderToday() {
           const detail = [
             ...foodParts,
             e.waterMl ? `+물 ${e.waterMl}ml` : "",
-            c.protein > 0 || c.totalWater > 0 ? `→ 단백질 ${c.protein.toFixed(1)}g, 수분 ${c.totalWater.toFixed(0)}ml` : "",
+            c.protein > 0 || c.totalWater > 0
+              ? `→ 단백질 ${c.protein.toFixed(1)}g, 수분 ${c.totalWater.toFixed(0)}ml${
+                  c.foodWater > 0 && c.pureWater > 0
+                    ? ` (사료 ${c.foodWater.toFixed(0)}+물 ${c.pureWater.toFixed(0)})`
+                    : ""
+                }`
+              : "",
             e.note || "",
           ]
             .filter(Boolean)
@@ -986,6 +997,12 @@ function renderToday() {
         <div class="stat"><div class="lab">총 수분</div>
           <div class="val">${s.water.toFixed(1)}<small> ml</small></div>
           ${wPct !== null ? `<div class="bar"><i style="width:${wPct}%"></i></div>` : ""}
+        </div>
+        <div class="stat"><div class="lab">사료 수분</div>
+          <div class="val">${s.foodWater.toFixed(1)}<small> ml</small></div>
+        </div>
+        <div class="stat"><div class="lab">순수 물</div>
+          <div class="val">${s.pureWater.toFixed(1)}<small> ml</small></div>
         </div>
         <div class="stat"><div class="lab">총 단백질</div>
           <div class="val">${s.protein.toFixed(1)}<small> g</small></div>
