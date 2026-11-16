@@ -16,13 +16,12 @@
   --purple:#8C7BB0;
 }
 *, *::before, *::after { box-sizing:border-box !important; }
-html,body{ margin:0; padding:0; overflow-x:hidden; width:100%; }
+html,body{ margin:0; padding:0; } /* overflow-x:hidden / width:100% 제거: html+body 동시 적용 시 최신 안드로이드 Chrome에서 스크롤 영역·fixed 기준이 어긋남 */
 body{
   background:var(--bg);
   color:var(--text);
   font-family:'Gowun Dodum', system-ui, -apple-system, sans-serif;
   -webkit-tap-highlight-color:transparent;
-  overscroll-behavior-y:contain;
   padding-top:env(safe-area-inset-top);
 }
 .serif{ font-family:'Gowun Batang', serif; }
@@ -33,10 +32,11 @@ input,select,textarea{ font-family:inherit; }
   max-width:480px;
   margin:0 auto;
   min-height:100vh;
+  min-height:100dvh;
   display:flex;
   flex-direction:column;
   padding-bottom:calc(76px + env(safe-area-inset-bottom));
-  overflow-x:hidden;
+  overflow-x:clip;
 }
 
 /* header */
@@ -187,7 +187,7 @@ input,select,textarea{ font-family:inherit; }
 
 /* 사진/영상 확대 보기 (라이트박스) */
 .lightbox-backdrop{
-  position:fixed; inset:0; width:100vw; height:100vh; background:rgba(10,8,6,.94);
+  position:fixed; inset:0; background:rgba(10,8,6,.94);
   display:flex; align-items:center; justify-content:center; z-index:60; padding:20px;
   padding-top:calc(20px + env(safe-area-inset-top)); padding-bottom:calc(20px + env(safe-area-inset-bottom));
 }
@@ -198,7 +198,7 @@ input,select,textarea{ font-family:inherit; }
 }
 .lightbox-inner{ max-width:100%; max-height:100%; display:flex; }
 .lightbox-inner img, .lightbox-inner video{
-  max-width:100%; max-height:calc(100vh - 80px); border-radius:10px; display:block; margin:0 auto; object-fit:contain;
+  max-width:100%; max-height:calc(100vh - 80px); max-height:calc(100dvh - 80px); border-radius:10px; display:block; margin:0 auto; object-fit:contain;
 }
 
 .fab{
@@ -215,20 +215,20 @@ input,select,textarea{ font-family:inherit; }
 .modal-backdrop{
   position:fixed;
   inset:0;
-  width:100vw;
-  height:100vh;
   background:rgba(43,38,34,.45);
   display:flex;
   align-items:flex-end;
   justify-content:center;
   z-index:50;
-  overflow-x:hidden;
+  overflow-x:clip;
+  overscroll-behavior:contain;
 }
 
 .modal{
   width:100% !important;
   max-width:480px !important;
   max-height:88vh;
+  max-height:88dvh;
   overflow-y:auto;
   overflow-x:hidden;
   background:var(--surface);
